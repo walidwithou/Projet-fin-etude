@@ -1,0 +1,395 @@
+import { useState, useMemo } from 'react';
+import { AnimatePresence } from 'motion/react';
+import { 
+  MapPin, 
+  Brain, 
+  Shield, 
+  Languages, 
+  Video, 
+  Clock, 
+  UserCheck, 
+  Stethoscope, 
+  History, 
+  Target, 
+  Users 
+} from 'lucide-react';
+
+import Header from '../components/Header';
+import Footer from '../components/Footer';
+import Landing from '../components/Landing';
+import Questionnaire from '../components/Questionnaire';
+import Upload from '../components/Upload';
+import Success from '../components/Success';
+import Results from '../components/Results';
+import TherapistProfile from '../components/TherapistProfile';
+
+import { WILAYAS_ALG, PATHOLOGIES, LANGUES, TEMPS_PREF } from '../constants';
+
+export default function Registration({ onNavigateToLogin, onNavigateToPage, initialMode }) {
+  const [role, setRole] = useState(initialMode === 'RESULTS' ? 'PATIENT' : null);
+  const [mode, setMode] = useState(initialMode || 'LANDING');
+  const [step, setStep] = useState(0);
+  const [selectedTherapist, setSelectedTherapist] = useState(null);
+  const [formData, setFormData] = useState({
+    nom: '',
+    prenom: '',
+    email: '',
+    motDePasse: '',
+    wilaya: '',
+    pathologies: [],
+    sexPref: 'Peu importe',
+    sensibiliteCulturelle: 'SANS_AVIS',
+    langues: [],
+    modeConsultation: [],
+    disponibilites: [],
+    publicCible: [],
+  });
+  const [uploadedFiles, setUploadedFiles] = useState([]);
+
+  const patientQuestions = [
+    {
+      id: 'localisation',
+      title: 'Localisation',
+      subtitle: 'Quelle est votre wilaya de résidence ?',
+      type: 'select',
+      field: 'wilaya',
+      options: WILAYAS_ALG,
+      icon: <MapPin className="w-5 h-5" />
+    },
+    {
+      id: 'raison',
+      title: 'Raison de la consultation',
+      subtitle: 'Quelle est la principale raison qui vous amène à consulter aujourd\'hui ?',
+      type: 'multiselect',
+      field: 'pathologies',
+      options: PATHOLOGIES,
+      icon: <Brain className="w-5 h-5" />
+    },
+    {
+      id: 'preferences',
+      title: 'Préférences concernant le thérapeute',
+      subtitle: 'Avez-vous une préférence pour le genre de votre thérapeute ?',
+      type: 'radio',
+      field: 'sexPref',
+      options: ['Une femme', 'Un homme', 'Peu importe'],
+      icon: <UserCheck className="w-5 h-5" />
+    },
+    {
+      id: 'sensibilite',
+      title: 'Sensibilité particulière',
+      subtitle: 'Souhaitez-vous un thérapeute qui partage une sensibilité particulière (ex: religion, approche culturelle) ?',
+      type: 'radio',
+      field: 'sensibiliteCulturelle',
+      options: ['Oui, c\'est important pour moi', 'Non, ce n\'est pas nécessaire', 'Je ne sais pas'],
+      icon: <Shield className="w-5 h-5" />
+    },
+    {
+      id: 'langues',
+      title: 'Communication et Langues',
+      subtitle: 'Dans quelle(s) langue(s) préférez-vous échanger durant vos séances ?',
+      type: 'multiselect',
+      field: 'langues',
+      options: LANGUES,
+      icon: <Languages className="w-5 h-5" />
+    },
+    {
+      id: 'mode',
+      title: 'Mode de consultation',
+      subtitle: 'Quel mode de consultation privilégiez-vous ?',
+      type: 'multiselect',
+      field: 'modeConsultation',
+      options: ['Visioconférence', 'Discussion par chat écrit', 'Appel audio uniquement', 'Présentiel'],
+      icon: <Video className="w-5 h-5" />
+    },
+    {
+      id: 'experience',
+      title: 'Expérience passée',
+      subtitle: 'Avez-vous déjà suivi une thérapie par le passé ?',
+      type: 'radio',
+      field: 'experiencePassee',
+      options: [
+        'Oui, j\'ai eu une expérience positive',
+        'Oui, mais l\'expérience n\'était pas satisfaisante',
+        'Non, c\'est ma première fois',
+        'Je ne sais pas'
+      ],
+      icon: <History className="w-5 h-5" />
+    },
+    {
+      id: 'disponibilites',
+      title: 'Disponibilités',
+      subtitle: 'À quels moments de la journée êtes-vous généralement disponible ?',
+      type: 'multiselect',
+      field: 'disponibilites',
+      options: TEMPS_PREF,
+      icon: <Clock className="w-5 h-5" />
+    },
+    {
+      id: 'attentes',
+      title: 'Attentes vis-à-vis de la thérapie',
+      subtitle: 'Que recherchez-vous principalement chez un thérapeute ?',
+      type: 'radio',
+      field: 'attentes',
+      options: [
+        'Quelqu\'un qui m\'écoute activement sans trop intervenir',
+        'Quelqu\'un qui me donne des exercices et des outils concrets',
+        'Quelqu\'un qui m\'aide à comprendre mon passé en profondeur',
+        'Je ne sais pas encore'
+      ],
+      icon: <Target className="w-5 h-5" />
+    },
+    {
+      id: 'registration',
+      title: 'Création de compte',
+      subtitle: 'Dernière étape ! Créez vos identifiants pour sauvegarder votre profil.',
+      type: 'registration',
+      field: 'registration',
+      options: [],
+      icon: <UserCheck className="w-5 h-5" />
+    }
+  ];
+
+  const therapistQuestions = [
+    {
+      id: 'localisation',
+      title: 'Informations Géographiques',
+      subtitle: 'Dans quelle wilaya êtes-vous basé(e) ?',
+      type: 'select',
+      field: 'wilaya',
+      options: [...WILAYAS_ALG, 'Je consulte exclusivement en ligne'],
+      icon: <MapPin className="w-5 h-5" />
+    },
+    {
+      id: 'expertise',
+      title: 'Domaines d\'Expertise',
+      subtitle: 'Quelles sont vos principales spécialités cliniques ?',
+      type: 'multiselect',
+      field: 'pathologies',
+      options: PATHOLOGIES,
+      icon: <Brain className="w-5 h-5" />
+    },
+    {
+      id: 'identite',
+      title: 'Identité et Approche',
+      subtitle: 'À quel genre vous identifiez-vous ?',
+      type: 'radio',
+      field: 'sexe',
+      options: ['Femme', 'Homme', 'Autre'],
+      icon: <UserCheck className="w-5 h-5" />
+    },
+    {
+      id: 'sensibilite',
+      title: 'Dimension Culturelle',
+      subtitle: 'Comment gérez-vous la dimension culturelle ou religieuse ?',
+      type: 'radio',
+      field: 'sensibiliteCulturelle',
+      options: [
+        'J\'intègre explicitement ces dimensions à la demande',
+        'Mon approche est strictement laïque et neutre',
+        'Autre'
+      ],
+      icon: <Shield className="w-5 h-5" />
+    },
+    {
+      id: 'langues',
+      title: 'Langues de travail',
+      subtitle: 'Dans quelle(s) langue(s) pouvez-vous mener une séance ?',
+      type: 'multiselect',
+      field: 'langues',
+      options: LANGUES,
+      icon: <Languages className="w-5 h-5" />
+    },
+    {
+      id: 'modes',
+      title: 'Modes de consultation',
+      subtitle: 'Quels modes de consultation proposez-vous ?',
+      type: 'multiselect',
+      field: 'modeConsultation',
+      options: ['Visioconférence', 'Discussion par chat écrit', 'Appel audio uniquement', 'Présentiel'],
+      icon: <Video className="w-5 h-5" />
+    },
+    {
+      id: 'approche',
+      title: 'Méthodologie',
+      subtitle: 'Quelle est votre approche thérapeutique principale ?',
+      type: 'radio',
+      field: 'approchePrincipale',
+      options: [
+        'TCC (Exercices et outils concrets)',
+        'Psychanalyse / Psychodynamique (Exploration du passé)',
+        'Humaniste / Gestalt (Écoute active)',
+        'Approche intégrative (Mélange)'
+      ],
+      icon: <Stethoscope className="w-5 h-5" />
+    },
+    {
+      id: 'public',
+      title: 'Public Cible',
+      subtitle: 'Avec quels publics préférez-vous travailler ?',
+      type: 'multiselect',
+      field: 'publicCible',
+      options: ['Enfants / Adolescents', 'Adultes', 'Couples', 'Personnes âgées', 'Tous publics'],
+      icon: <Users className="w-5 h-5" />
+    },
+    {
+      id: 'disponibilites',
+      title: 'Créneaux horaires',
+      subtitle: 'Quels sont vos créneaux habituels ?',
+      type: 'multiselect',
+      field: 'disponibilites',
+      options: TEMPS_PREF,
+      icon: <Clock className="w-5 h-5" />
+    },
+    {
+      id: 'registration',
+      title: 'Création de compte',
+      subtitle: 'Dernière étape ! Identifiez-vous en tant que professionnel.',
+      type: 'registration',
+      field: 'registration',
+      options: [],
+      icon: <UserCheck className="w-5 h-5" />
+    }
+  ];
+
+  const questions = role === 'PATIENT' ? patientQuestions : therapistQuestions;
+
+  const nextStep = () => {
+    if (step < questions.length - 1) {
+      setStep(step + 1);
+    } else {
+      if (role === 'THERAPEUTE') {
+        setMode('UPLOAD');
+      } else {
+        setMode('SUCCESS');
+      }
+    }
+  };
+
+  const handleFileUpload = (e) => {
+    if (e.target.files) {
+      const files = Array.from(e.target.files).map(f => ({ name: f.name, type: f.type }));
+      setUploadedFiles(prev => [...prev, ...files]);
+    }
+  };
+
+  const prevStep = () => {
+    if (step > 0) {
+      setStep(step - 1);
+    } else {
+      setMode('LANDING');
+      setRole(null);
+    }
+  };
+
+  const handleSelection = (val) => {
+    const currentQuestion = questions[step];
+    if (currentQuestion.type === 'multiselect') {
+      const current = formData[currentQuestion.field];
+      if (current.includes(val)) {
+        setFormData({ ...formData, [currentQuestion.field]: current.filter(v => v !== val) });
+      } else {
+        setFormData({ ...formData, [currentQuestion.field]: [...current, val] });
+      }
+    } else {
+      setFormData({ ...formData, [currentQuestion.field]: val });
+    }
+  };
+
+  const matches = useMemo(() => {
+    if (mode !== 'RESULTS' || role !== 'PATIENT') return [];
+    const therapists = [
+      { id: 1, name: "Dr. Amine B.", speciality: "TCC", languages: ["Français", "Arabe (Darja algérienne)"], wilaya: "16 - Alger", gender: "Homme", rating: 4.8 },
+      { id: 2, name: "Mme Sarah K.", speciality: "Psychanalyse", languages: ["Arabe (Darja algérienne)", "Arabe classique (Fusha)"], wilaya: "06 - Béjaïa", gender: "Femme", rating: 4.9 },
+      { id: 3, name: "Dr. Lynda M.", speciality: "Humaniste", languages: ["Tamazight", "Français"], wilaya: "15 - Tizi Ouzou", gender: "Femme", rating: 4.7 },
+      { id: 4, name: "Mr. Yacine T.", speciality: "TCC", languages: ["Arabe (Darja algérienne)", "Français"], wilaya: "31 - Oran", gender: "Homme", rating: 4.6 },
+    ];
+
+    return therapists.map(t => {
+      let score = 0;
+      const langMatch = t.languages.some(l => formData.langues.includes(l));
+      if (langMatch) score += 30;
+      if (t.wilaya === formData.wilaya) score += 20;
+      if (formData.sexPref === 'Peu importe' || 
+         (formData.sexPref === 'Une femme' && t.gender === 'Femme') || 
+         (formData.sexPref === 'Un homme' && t.gender === 'Homme')) {
+        score += 25;
+      }
+      return { ...t, score };
+    }).sort((a, b) => b.score - a.score);
+  }, [mode, role, formData]);
+
+  return (
+    <div className="min-h-screen bg-bg-main text-text-main font-sans selection:bg-primary-light">
+      <Header 
+        onLogin={onNavigateToLogin} 
+        onAbout={() => onNavigateToPage('ABOUT')}
+        onHome={() => onNavigateToPage('REGISTRATION')}
+        onNavigateToPage={onNavigateToPage}
+      />
+
+      <main className="pt-32 pb-20 px-6 max-w-4xl mx-auto">
+        <AnimatePresence mode="wait">
+          {mode === 'LANDING' && (
+            <Landing 
+              onSelectRole={(r) => { setRole(r); setMode('QUESTIONNAIRE'); setStep(0); }} 
+            />
+          )}
+
+          {mode === 'QUESTIONNAIRE' && (
+            <Questionnaire 
+              questions={questions}
+              step={step}
+              formData={formData}
+              onSelection={handleSelection}
+              onPrev={prevStep}
+              onNext={nextStep}
+              onUpdateFormData={(updates) => setFormData({ ...formData, ...updates })}
+              role={role}
+            />
+          )}
+
+          {mode === 'UPLOAD' && (
+            <Upload 
+              uploadedFiles={uploadedFiles}
+              onFileUpload={handleFileUpload}
+              onComplete={() => setMode('SUCCESS')}
+            />
+          )}
+
+          {mode === 'SUCCESS' && (
+            <Success 
+              role={role}
+              userName={formData.prenom}
+              onNext={() => setMode('RESULTS')}
+              onHome={() => { setMode('LANDING'); setRole(null); }}
+            />
+          )}
+
+          {mode === 'RESULTS' && (
+            <Results 
+              role={role}
+              matches={matches}
+              onHome={() => { setMode('LANDING'); setRole(null); }}
+              onSelectTherapist={(therapist) => {
+                setSelectedTherapist(therapist);
+                setMode('PROFILE');
+              }}
+            />
+          )}
+
+          {mode === 'PROFILE' && (
+            <TherapistProfile 
+              therapist={selectedTherapist}
+              onBack={() => setMode('RESULTS')}
+              onConfirm={(therapist) => {
+                onNavigateToPage('PATIENT', { therapist });
+              }}
+            />
+          )}
+        </AnimatePresence>
+      </main>
+
+      <Footer onNavigate={onNavigateToPage} />
+    </div>
+  );
+}

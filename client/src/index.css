@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #7C3AED;
+  --color-primary-light: #EBDEFC;
+  --color-primary-dark: #581C87;
+  --color-bg-main: #FAF9FF;
+  --color-text-main: #2D2D2D;
+  --color-text-muted: #4C1D95;
+  --color-border-color: #F1E9FE;
+  --color-card-bg: #FFFFFF;
+  
+  --shadow-primary: 0 10px 25px -5px rgba(124, 58, 237, 0.2);
+}
+
+.dark {
+  --color-bg-main: #0B0A0F;
+  --color-card-bg: #15131D;
+  --color-text-main: #FDFCFE;
+  --color-text-muted: #A78BFA;
+  --color-border-color: #231F30;
+  --color-primary-light: #231F30;
+}
+
+@layer components {
+  .t-card {
+    @apply bg-card-bg border border-border-color rounded-[1.5rem] p-4 lg:p-6 shadow-sm transition-all;
+  }
+
+  .t-btn-primary {
+    @apply bg-primary text-white border-none px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed shadow-lg hover:shadow-primary;
+  }
+
+  .t-input {
+    @apply w-full p-2.5 bg-bg-main border-2 border-border-color rounded-xl outline-none focus:border-primary transition-all text-text-main text-sm;
+  }
+
+  .t-select {
+    @apply w-full p-2.5 bg-bg-main border-2 border-border-color rounded-xl outline-none focus:border-primary transition-all text-text-main appearance-none text-sm;
+  }
+
+  .t-badge {
+    @apply px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest inline-flex items-center gap-2;
+  }
+
+  .t-badge-accent {
+    @apply bg-primary-light text-primary;
+  }
+
+  .t-grid-selection {
+    @apply grid grid-cols-1 gap-3;
+  }
+
+  .t-option {
+    @apply flex items-center justify-between p-5 rounded-2xl border-2 transition-all text-left border-border-color hover:border-primary/30 hover:bg-bg-main cursor-pointer bg-card-bg;
+  }
+
+  .t-option.selected {
+    @apply bg-primary/5 border-primary shadow-lg shadow-primary/5;
+  }
+
+  .t-option.selected span {
+    @apply text-primary font-bold;
+  }
+
+  .t-upload-zone {
+    @apply border-2 border-dashed border-primary/30 bg-primary/2 rounded-3xl p-12 text-center cursor-pointer transition-all hover:border-primary hover:bg-primary/5;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-bg-main text-text-main antialiased font-sans;
+    margin: 0;
+  }
+  
+  * {
+    @apply border-border-color;
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-primary/20 rounded-full transition-colors;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-primary/40;
+  }
+
+  .dark ::-webkit-scrollbar-thumb {
+    @apply bg-white/10;
+  }
+
+  .dark ::-webkit-scrollbar-thumb:hover {
+    @apply bg-white/20;
+  }
+
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #7C3AED33 transparent;
+  }
+
+  .dark * {
+    scrollbar-color: #ffffff1a transparent;
+  }
+}
+
