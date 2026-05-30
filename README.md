@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ⚡ my-fullstack-app
 
 A production-ready fullstack starter: **React + Vite** on the frontend, **Express + Prisma** on the backend, connected to a **Neon PostgreSQL** database.
@@ -118,3 +119,8 @@ npm run dev   # in /client → vite
 | ORM        | Prisma 5                      |
 | Database   | Neon (PostgreSQL)             |
 | Dev tools  | nodemon, dotenv               |
+=======
+# Projet-fin-etude
+projet de fin d'étude de cycle licence informatique
+ida khrejlek hadchi rak m3ana
+>>>>>>> 4f2d6e9f62f2dee4800162d293e26944f6c1c90d
