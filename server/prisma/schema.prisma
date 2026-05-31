@@ -76,12 +76,122 @@ model Verification {
 }
 
 // ============================================================================
+// QUESTIONNAIRE ENUMS (Single-choice options)
+// ============================================================================
+
+/// Patient preference for therapist gender
+enum GenrePref {
+  FEMME       // Une femme
+  HOMME       // Un homme
+  PEU_IMPORTE // Peu importe
+}
+
+/// Patient sensitivity preference (cultural/religious awareness)
+enum SensibilitePatient {
+  OUI_IMPORTANT   // Oui, c'est important pour moi
+  NON_NECESSAIRE  // Non, ce n'est pas nécessaire
+  NE_SAIS_PAS     // Je ne sais pas
+}
+
+/// Patient's past therapy experience
+enum ExperiencePassee {
+  OUI_POSITIVE          // Oui, j'ai eu une expérience positive
+  OUI_NON_SATISFAISANTE // Oui, mais l'expérience n'était pas satisfaisante
+  NON_PREMIERE_FOIS     // Non, c'est ma première fois
+  NE_SAIS_PAS           // Je ne sais pas
+}
+
+/// Patient's expectations for therapy style
+enum AttentesTherapie {
+  ECOUTE_ACTIVE      // Quelqu'un qui m'écoute activement sans trop intervenir
+  EXERCICES_OUTILS   // Quelqu'un qui me donne des exercices et des outils concrets
+  COMPRENDRE_PASSE   // Quelqu'un qui m'aide à comprendre mon passé en profondeur
+  NE_SAIS_PAS        // Je ne sais pas encore
+}
+
+/// Therapist's sensitivity/cultural approach
+enum SensibiliteTherapeute {
+  INTEGRE_DEMANDE    // J'intègre explicitement ces dimensions à la demande
+  LAIQUE_NEUTRE      // Mon approche est strictement laïque et neutre
+  AUTRE              // Autre
+}
+
+/// Therapist's therapeutic approach
+enum ApprocheTherapeute {
+  TCC                // TCC (Exercices et outils concrets)
+  PSYCHANALYSE       // Psychanalyse / Psychodynamique (Exploration du passé)
+  HUMANISTE_GESTALT  // Humaniste / Gestalt (Écoute active)
+  INTEGRATIVE        // Approche intégrative (Mélange)
+}
+
+// ============================================================================
+// LOOKUP TABLES (Multi-select options)
+// ============================================================================
+
+/// Available consultation modes
+model ConsultationMode {
+  id    String @id @default(cuid())
+  code  String @unique // visio, audio, presentiel
+  label String
+
+  patients   PatientConsultationMode[]
+  therapists TherapistConsultationMode[]
+
+  @@map("consultation_mode")
+}
+
+/// Available time slots
+model TimeSlot {
+  id    String @id @default(cuid())
+  code  String @unique // matin, apres_midi, soiree, weekend
+  label String
+
+  patients   PatientTimeSlot[]
+  therapists TherapistTimeSlot[]
+
+  @@map("time_slot")
+}
+
+/// Available languages
+model Language {
+  id    String @id @default(cuid())
+  code  String @unique // ar_darja, ar_fusha, tamazight, fr, en
+  label String
+
+  patients   PatientLanguage[]
+  therapists TherapistLanguage[]
+
+  @@map("language")
+}
+
+/// Available pathologies/issues
+model Pathology {
+  id    String @id @default(cuid())
+  code  String @unique // stress_anxiete, depression, etc.
+  label String
+
+  patients   PatientPathology[]
+  therapists TherapistPathology[]
+
+  @@map("pathology")
+}
+
+/// Target audience types (therapist specialization)
+model PublicType {
+  id    String @id @default(cuid())
+  code  String @unique // enfants_adolescents, adultes, couples, personnes_agees, tous_publics
+  label String
+
+  therapists TherapistPublicType[]
+
+  @@map("public_type")
+}
+
+// ============================================================================
 // TASSARUT PLATFORM TABLES
 // ============================================================================
 
 /// Patient Profile
-/// Extends user with patient-specific information including questionnaire data
-/// and matching preferences for the onboarding/matching workflow.
 model Patient {
   id                  String    @id @default(cuid())
   userId              String
@@ -89,16 +199,31 @@ model Patient {
   gender              String?
   phone               String?
   address             String?
-  wilaya              String?   // Algerian province
+  wilaya              String?
   emergencyContact    String?
   emergencyPhone      String?
   preferredLanguage   String?   @default("ar")
-  questionnaireData   Json?     // Stores onboarding questionnaire responses
   matchedTherapistId  String?
   onboardingCompleted Boolean   @default(false)
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
+  // Questionnaire single-choice responses (stored as enums)
+  genrePref           GenrePref?
+  sensibilitePatient  SensibilitePatient?
+  experiencePassee    ExperiencePassee?
+  attentesTherapie    AttentesTherapie?
+
+  // Legacy JSON backup (optional, for migration)
+  questionnaireDataRaw Json? @map("questionnaire_data_raw")
+
+  // Multi-select questionnaire relations
+  consultationModes PatientConsultationMode[]
+  timeSlots         PatientTimeSlot[]
+  languages         PatientLanguage[]
+  pathologies       PatientPathology[]
+
+  // Other relations
   appointments   Appointment[]
   sessionReports SessionReport[]
   messages       Message[]       @relation("PatientMessages")
@@ -108,29 +233,37 @@ model Patient {
 }
 
 /// Therapist Profile
-/// Stores therapist credentials, specializations, availability,
-/// and verification status for the matching and booking workflows.
 model Therapist {
   id                   String   @id @default(cuid())
   userId               String
   licenseNumber        String?
   licenseVerified      Boolean  @default(false)
-  specializations      String[] // e.g., ['anxiety', 'depression', 'trauma']
   yearsOfExperience    Int?
   education            String?
   bio                  String?
   profilePhotoUrl      String?
   hourlyRate           Decimal? @db.Decimal(10, 2)
-  currency             String?  @default("DZD") // Algerian Dinar
-  availability         Json?    // Weekly schedule JSON
-  languages            String[] // e.g., ['ar', 'fr', 'en']
+  currency             String?  @default("DZD")
+  availability         Json?
   acceptingNewPatients Boolean  @default(true)
   rating               Decimal? @db.Decimal(3, 2)
   totalReviews         Int      @default(0)
-  verificationStatus   String   @default("pending") // pending, verified, rejected
+  verificationStatus   String   @default("pending")
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
+  // Questionnaire single-choice responses (stored as enums)
+  sensibiliteTherapeute SensibiliteTherapeute?
+  approcheTherapeute    ApprocheTherapeute?
+
+  // Multi-select questionnaire relations
+  publicTypes       TherapistPublicType[]
+  consultationModes TherapistConsultationMode[]
+  timeSlots         TherapistTimeSlot[]
+  languages         TherapistLanguage[]
+  pathologies       TherapistPathology[]
+
+  // Other relations
   appointments   Appointment[]
   sessionReports SessionReport[]
   messages       Message[]       @relation("TherapistMessages")
@@ -139,17 +272,140 @@ model Therapist {
   @@map("therapist")
 }
 
+// ============================================================================
+// JOIN TABLES (Many-to-Many Relations)
+// ============================================================================
+
+/// Patient - Consultation Mode (many-to-many)
+model PatientConsultationMode {
+  id                 String @id @default(cuid())
+  patientId          String
+  consultationModeId String
+
+  patient          Patient          @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  consultationMode ConsultationMode @relation(fields: [consultationModeId], references: [id], onDelete: Cascade)
+
+  @@unique([patientId, consultationModeId])
+  @@map("patient_consultation_mode")
+}
+
+/// Therapist - Consultation Mode (many-to-many)
+model TherapistConsultationMode {
+  id                 String @id @default(cuid())
+  therapistId        String
+  consultationModeId String
+
+  therapist        Therapist        @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+  consultationMode ConsultationMode @relation(fields: [consultationModeId], references: [id], onDelete: Cascade)
+
+  @@unique([therapistId, consultationModeId])
+  @@map("therapist_consultation_mode")
+}
+
+/// Patient - Time Slot (many-to-many)
+model PatientTimeSlot {
+  id         String @id @default(cuid())
+  patientId  String
+  timeSlotId String
+
+  patient  Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  timeSlot TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+
+  @@unique([patientId, timeSlotId])
+  @@map("patient_time_slot")
+}
+
+/// Therapist - Time Slot (many-to-many)
+model TherapistTimeSlot {
+  id          String @id @default(cuid())
+  therapistId String
+  timeSlotId  String
+
+  therapist Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+  timeSlot  TimeSlot  @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+
+  @@unique([therapistId, timeSlotId])
+  @@map("therapist_time_slot")
+}
+
+/// Patient - Language (many-to-many)
+model PatientLanguage {
+  id         String @id @default(cuid())
+  patientId  String
+  languageId String
+
+  patient  Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  language Language @relation(fields: [languageId], references: [id], onDelete: Cascade)
+
+  @@unique([patientId, languageId])
+  @@map("patient_language")
+}
+
+/// Therapist - Language (many-to-many)
+model TherapistLanguage {
+  id          String @id @default(cuid())
+  therapistId String
+  languageId  String
+
+  therapist Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+  language  Language  @relation(fields: [languageId], references: [id], onDelete: Cascade)
+
+  @@unique([therapistId, languageId])
+  @@map("therapist_language")
+}
+
+/// Patient - Pathology (many-to-many)
+model PatientPathology {
+  id          String @id @default(cuid())
+  patientId   String
+  pathologyId String
+
+  patient   Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  pathology Pathology @relation(fields: [pathologyId], references: [id], onDelete: Cascade)
+
+  @@unique([patientId, pathologyId])
+  @@map("patient_pathology")
+}
+
+/// Therapist - Pathology expertise (many-to-many)
+model TherapistPathology {
+  id          String @id @default(cuid())
+  therapistId String
+  pathologyId String
+
+  therapist Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+  pathology Pathology @relation(fields: [pathologyId], references: [id], onDelete: Cascade)
+
+  @@unique([therapistId, pathologyId])
+  @@map("therapist_pathology")
+}
+
+/// Therapist - Public Type (many-to-many)
+model TherapistPublicType {
+  id           String @id @default(cuid())
+  therapistId  String
+  publicTypeId String
+
+  therapist  Therapist  @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+  publicType PublicType @relation(fields: [publicTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([therapistId, publicTypeId])
+  @@map("therapist_public_type")
+}
+
+// ============================================================================
+// OTHER PLATFORM TABLES
+// ============================================================================
+
 /// Appointment
-/// Manages booking between patients and therapists with
-/// scheduling, status tracking, and cancellation handling.
 model Appointment {
   id                 String    @id @default(cuid())
   patientId          String
   therapistId        String
   scheduledAt        DateTime
   durationMinutes    Int       @default(60)
-  status             String    @default("scheduled") // scheduled, confirmed, in_progress, completed, cancelled, no_show
-  type               String    @default("video") // video, audio, chat
+  status             String    @default("scheduled")
+  type               String    @default("video")
   meetingUrl         String?
   notes              String?
   cancelledAt        DateTime?
@@ -167,8 +423,6 @@ model Appointment {
 }
 
 /// Session Report
-/// Clinical documentation for therapy sessions including
-/// notes, interventions, progress assessment, and risk evaluation.
 model SessionReport {
   id                 String   @id @default(cuid())
   appointmentId      String   @unique
@@ -179,7 +433,7 @@ model SessionReport {
   sessionNotes       String?
   interventionsUsed  String[]
   progressAssessment String?
-  moodRating         Int?     // 1-10 scale
+  moodRating         Int?
   homeworkAssigned   String?
   nextSessionGoals   String?
   riskAssessment     String?
@@ -195,15 +449,13 @@ model SessionReport {
 }
 
 /// Message
-/// Stores chat messages between patients and therapists
-/// for the secure messaging feature.
 model Message {
   id             String    @id @default(cuid())
   senderId       String
   receiverId     String
   conversationId String
   content        String
-  messageType    String    @default("text") // text, file, image
+  messageType    String    @default("text")
   isRead         Boolean   @default(false)
   readAt         DateTime?
   createdAt      DateTime  @default(now())
@@ -218,12 +470,10 @@ model Message {
 }
 
 /// Notification
-/// User notifications for appointments, messages,
-/// system alerts, and other events.
 model Notification {
   id        String    @id @default(cuid())
   userId    String
-  type      String    // appointment_reminder, message, system, etc.
+  type      String
   title     String
   message   String
   isRead    Boolean   @default(false)
@@ -237,14 +487,12 @@ model Notification {
 }
 
 /// Review
-/// Patient reviews and ratings for therapists
-/// with optional anonymity.
 model Review {
   id            String   @id @default(cuid())
   patientId     String
   therapistId   String
   appointmentId String?
-  rating        Int      // 1-5 stars
+  rating        Int
   comment       String?
   isAnonymous   Boolean  @default(false)
   isVisible     Boolean  @default(true)
@@ -259,14 +507,12 @@ model Review {
 }
 
 /// Audit Log
-/// Tracks administrative actions and system events
-/// for compliance and security auditing.
 model AuditLog {
   id            String   @id @default(cuid())
   actorId       String
-  actorRole     String   // patient, therapist, admin
-  action        String   // e.g., 'user.created', 'appointment.cancelled'
-  resourceType  String   // e.g., 'user', 'appointment'
+  actorRole     String
+  action        String
+  resourceType  String
   resourceId    String?
   previousValue Json?
   newValue      Json?
