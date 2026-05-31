@@ -1,0 +1,280 @@
+// Prisma Schema for Tassarut Platform
+// Teleconsultation and Online Therapy Platform for Algeria
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// BETTER AUTH TABLES (Required for authentication)
+// ============================================================================
+
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions      Session[]
+  accounts      Account[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("account")
+}
+
+model Verification {
+  id         String    @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime? @default(now())
+  updatedAt  DateTime? @updatedAt
+
+  @@map("verification")
+}
+
+// ============================================================================
+// TASSARUT PLATFORM TABLES
+// ============================================================================
+
+/// Patient Profile
+/// Extends user with patient-specific information including questionnaire data
+/// and matching preferences for the onboarding/matching workflow.
+model Patient {
+  id                  String    @id @default(cuid())
+  userId              String
+  dateOfBirth         DateTime? @db.Date
+  gender              String?
+  phone               String?
+  address             String?
+  wilaya              String?   // Algerian province
+  emergencyContact    String?
+  emergencyPhone      String?
+  preferredLanguage   String?   @default("ar")
+  questionnaireData   Json?     // Stores onboarding questionnaire responses
+  matchedTherapistId  String?
+  onboardingCompleted Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  appointments   Appointment[]
+  sessionReports SessionReport[]
+  messages       Message[]       @relation("PatientMessages")
+  reviews        Review[]
+
+  @@map("patient")
+}
+
+/// Therapist Profile
+/// Stores therapist credentials, specializations, availability,
+/// and verification status for the matching and booking workflows.
+model Therapist {
+  id                   String   @id @default(cuid())
+  userId               String
+  licenseNumber        String?
+  licenseVerified      Boolean  @default(false)
+  specializations      String[] // e.g., ['anxiety', 'depression', 'trauma']
+  yearsOfExperience    Int?
+  education            String?
+  bio                  String?
+  profilePhotoUrl      String?
+  hourlyRate           Decimal? @db.Decimal(10, 2)
+  currency             String?  @default("DZD") // Algerian Dinar
+  availability         Json?    // Weekly schedule JSON
+  languages            String[] // e.g., ['ar', 'fr', 'en']
+  acceptingNewPatients Boolean  @default(true)
+  rating               Decimal? @db.Decimal(3, 2)
+  totalReviews         Int      @default(0)
+  verificationStatus   String   @default("pending") // pending, verified, rejected
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  appointments   Appointment[]
+  sessionReports SessionReport[]
+  messages       Message[]       @relation("TherapistMessages")
+  reviews        Review[]
+
+  @@map("therapist")
+}
+
+/// Appointment
+/// Manages booking between patients and therapists with
+/// scheduling, status tracking, and cancellation handling.
+model Appointment {
+  id                 String    @id @default(cuid())
+  patientId          String
+  therapistId        String
+  scheduledAt        DateTime
+  durationMinutes    Int       @default(60)
+  status             String    @default("scheduled") // scheduled, confirmed, in_progress, completed, cancelled, no_show
+  type               String    @default("video") // video, audio, chat
+  meetingUrl         String?
+  notes              String?
+  cancelledAt        DateTime?
+  cancelledBy        String?
+  cancellationReason String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  patient       Patient         @relation(fields: [patientId], references: [id])
+  therapist     Therapist       @relation(fields: [therapistId], references: [id])
+  sessionReport SessionReport?
+  reviews       Review[]
+
+  @@map("appointment")
+}
+
+/// Session Report
+/// Clinical documentation for therapy sessions including
+/// notes, interventions, progress assessment, and risk evaluation.
+model SessionReport {
+  id                 String   @id @default(cuid())
+  appointmentId      String   @unique
+  therapistId        String
+  patientId          String
+  sessionDate        DateTime
+  presentingIssues   String?
+  sessionNotes       String?
+  interventionsUsed  String[]
+  progressAssessment String?
+  moodRating         Int?     // 1-10 scale
+  homeworkAssigned   String?
+  nextSessionGoals   String?
+  riskAssessment     String?
+  isConfidential     Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id])
+  therapist   Therapist   @relation(fields: [therapistId], references: [id])
+  patient     Patient     @relation(fields: [patientId], references: [id])
+
+  @@map("session_report")
+}
+
+/// Message
+/// Stores chat messages between patients and therapists
+/// for the secure messaging feature.
+model Message {
+  id             String    @id @default(cuid())
+  senderId       String
+  receiverId     String
+  conversationId String
+  content        String
+  messageType    String    @default("text") // text, file, image
+  isRead         Boolean   @default(false)
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  patient   Patient?   @relation("PatientMessages", fields: [senderId], references: [id], map: "message_patient_fkey")
+  therapist Therapist? @relation("TherapistMessages", fields: [receiverId], references: [id], map: "message_therapist_fkey")
+
+  @@index([conversationId])
+  @@index([senderId])
+  @@index([receiverId])
+  @@map("message")
+}
+
+/// Notification
+/// User notifications for appointments, messages,
+/// system alerts, and other events.
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String    // appointment_reminder, message, system, etc.
+  title     String
+  message   String
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  actionUrl String?
+  metadata  Json?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("notification")
+}
+
+/// Review
+/// Patient reviews and ratings for therapists
+/// with optional anonymity.
+model Review {
+  id            String   @id @default(cuid())
+  patientId     String
+  therapistId   String
+  appointmentId String?
+  rating        Int      // 1-5 stars
+  comment       String?
+  isAnonymous   Boolean  @default(false)
+  isVisible     Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  patient     Patient      @relation(fields: [patientId], references: [id])
+  therapist   Therapist    @relation(fields: [therapistId], references: [id])
+  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+
+  @@map("review")
+}
+
+/// Audit Log
+/// Tracks administrative actions and system events
+/// for compliance and security auditing.
+model AuditLog {
+  id            String   @id @default(cuid())
+  actorId       String
+  actorRole     String   // patient, therapist, admin
+  action        String   // e.g., 'user.created', 'appointment.cancelled'
+  resourceType  String   // e.g., 'user', 'appointment'
+  resourceId    String?
+  previousValue Json?
+  newValue      Json?
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+
+  @@index([actorId])
+  @@index([resourceType])
+  @@map("audit_log")
+}
