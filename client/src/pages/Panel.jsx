@@ -8,6 +8,7 @@ import {
   Lock, RefreshCw
 } from 'lucide-react';
 import LeafKeyIcon from '../components/LeafKeyIcon';
+import { removeToken } from '../services/api';
 
 // --- INITIAL MOCK STATES ---
 const INITIAL_USERS = [

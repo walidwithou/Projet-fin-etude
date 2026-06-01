@@ -24,12 +24,39 @@ import Results from '../components/Results';
 import TherapistProfile from '../components/TherapistProfile';
 
 import { WILAYAS_ALG, PATHOLOGIES, LANGUES, TEMPS_PREF } from '../constants';
+import { auth, setToken } from '../services/api';
+
+const PATHOLOGY_CODES = [
+  'stress_anxiete',
+  'depression',
+  'problemes_relationnels',
+  'deuil',
+  'confiance_estime',
+  'traumatisme',
+  'troubles_alimentaires',
+  'addictions',
+  'troubles_sommeil',
+  'autre',
+];
+const LANGUAGE_CODES = ['ar_darja', 'ar_fusha', 'tamazight', 'fr', 'en'];
+const CONSULTATION_MODE_CODES = ['visio', 'audio', 'presentiel'];
+const TIME_SLOT_CODES = ['matin', 'apres_midi', 'soiree', 'weekend'];
+const PUBLIC_TYPE_CODES = ['enfants_adolescents', 'adultes', 'couples', 'personnes_agees', 'tous_publics'];
+const PATIENT_GENDER_PREFERENCE_CODES = ['FEMME', 'HOMME', 'PEU_IMPORTE'];
+const PATIENT_SENSITIVITY_CODES = ['OUI_IMPORTANT', 'NON_NECESSAIRE', 'NE_SAIS_PAS'];
+const PATIENT_EXPERIENCE_CODES = ['OUI_POSITIVE', 'OUI_NON_SATISFAISANTE', 'NON_PREMIERE_FOIS', 'NE_SAIS_PAS'];
+const PATIENT_EXPECTATION_CODES = ['ECOUTE_ACTIVE', 'EXERCICES_OUTILS', 'COMPRENDRE_PASSE', 'NE_SAIS_PAS'];
+const THERAPIST_GENDER_CODES = ['FEMME', 'HOMME', 'AUTRE'];
+const THERAPIST_SENSITIVITY_CODES = ['INTEGRE_DEMANDE', 'LAIQUE_NEUTRE', 'AUTRE'];
+const THERAPIST_APPROACH_CODES = ['TCC', 'PSYCHANALYSE', 'HUMANISTE_GESTALT', 'INTEGRATIVE'];
 
 export default function Registration({ onNavigateToLogin, onNavigateToPage, initialMode }) {
-  const [role, setRole] = useState(initialMode === 'RESULTS' ? 'PATIENT' : null);
+  const [role, setRole] = useState(initialMode === 'RESULTS' ? 'PATIENT' : null );
   const [mode, setMode] = useState(initialMode || 'LANDING');
   const [step, setStep] = useState(0);
   const [selectedTherapist, setSelectedTherapist] = useState(null);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [registrationError, setRegistrationError] = useState('');
   const [formData, setFormData] = useState({
     nom: '',
     prenom: '',
@@ -98,7 +125,7 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
       subtitle: 'Quel mode de consultation privilégiez-vous ?',
       type: 'multiselect',
       field: 'modeConsultation',
-      options: ['Visioconférence', 'Discussion par chat écrit', 'Appel audio uniquement', 'Présentiel'],
+      options: ['Visioconférence', 'Appel audio uniquement', 'Présentiel'],
       icon: <Video className="w-5 h-5" />
     },
     {
@@ -252,16 +279,78 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
   ];
 
   const questions = role === 'PATIENT' ? patientQuestions : therapistQuestions;
+  const getQuestionOptions = (field) => questions.find(question => question.field === field)?.options || [];
+  const getSingleChoiceCode = (field, codes) => codes[getQuestionOptions(field).indexOf(formData[field])];
+  const getMultipleChoiceCodes = (field, codes) => (
+    formData[field].map(value => codes[getQuestionOptions(field).indexOf(value)]).filter(Boolean)
+  );
 
-  const nextStep = () => {
+  const nextStep = async () => {
     if (step < questions.length - 1) {
       setStep(step + 1);
     } else {
-      if (role === 'THERAPEUTE') {
+      // Final step - register user
+      await handleRegistration();
+    }
+  };
+
+  const handleRegistration = async () => {
+    setIsRegistering(true);
+    setRegistrationError('');
+
+    try {
+      const account = {
+        name: `${formData.prenom} ${formData.nom}`,
+        email: formData.email,
+        password: formData.motDePasse,
+      };
+      const commonMatching = {
+        pathologies: getMultipleChoiceCodes('pathologies', PATHOLOGY_CODES),
+        languages: getMultipleChoiceCodes('langues', LANGUAGE_CODES),
+        consultationModes: getMultipleChoiceCodes('modeConsultation', CONSULTATION_MODE_CODES),
+        timeSlots: getMultipleChoiceCodes('disponibilites', TIME_SLOT_CODES),
+      };
+      const registrationData = role === 'PATIENT'
+        ? {
+            role : 'PATIENT',
+            account,
+            profile: {
+              wilaya: formData.wilaya,
+            },
+            matching: {
+              ...commonMatching,
+              genrePref: getSingleChoiceCode('sexPref', PATIENT_GENDER_PREFERENCE_CODES),
+              sensibilitePatient: getSingleChoiceCode('sensibiliteCulturelle', PATIENT_SENSITIVITY_CODES),
+              experiencePassee: getSingleChoiceCode('experiencePassee', PATIENT_EXPERIENCE_CODES),
+              attentesTherapie: getSingleChoiceCode('attentes', PATIENT_EXPECTATION_CODES),
+            },
+          }
+        : {
+            role : 'THERAPIST',
+            account,
+            profile: {
+              gender: getSingleChoiceCode('sexe', THERAPIST_GENDER_CODES),
+              documents: [],
+            },
+            matching: {
+              ...commonMatching,
+              sensibiliteTherapeute: getSingleChoiceCode('sensibiliteCulturelle', THERAPIST_SENSITIVITY_CODES),
+              approcheTherapeute: getSingleChoiceCode('approchePrincipale', THERAPIST_APPROACH_CODES),
+              publicTypes: getMultipleChoiceCodes('publicCible', PUBLIC_TYPE_CODES),
+            },
+          };
+
+      const response = await auth.register(registrationData);
+      setToken(response.data.token);
+
+      if (role === 'THERAPIST') {
         setMode('UPLOAD');
       } else {
         setMode('SUCCESS');
       }
+    } catch (err) {
+      setRegistrationError(err.message || 'Erreur lors de l\'inscription');
+      setIsRegistering(false);
     }
   };
 
@@ -345,6 +434,8 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
               onNext={nextStep}
               onUpdateFormData={(updates) => setFormData({ ...formData, ...updates })}
               role={role}
+              isLoading={isRegistering}
+              error={registrationError}
             />
           )}
 

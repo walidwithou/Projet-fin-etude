@@ -15,16 +15,18 @@ datasource db {
 // ============================================================================
 
 model User {
-  id            String    @id
+  id            String   @id
   name          String
-  email         String    @unique
-  emailVerified Boolean   @default(false)
+  email         String   @unique
+  emailVerified Boolean  @default(false)
   image         String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  sessions      Session[]
-  accounts      Account[]
+  sessions  Session[]
+  accounts  Account[]
+  patient   Patient?
+  therapist Therapist?
 
   @@map("user")
 }
@@ -81,47 +83,47 @@ model Verification {
 
 /// Patient preference for therapist gender
 enum GenrePref {
-  FEMME       // Une femme
-  HOMME       // Un homme
+  FEMME // Une femme
+  HOMME // Un homme
   PEU_IMPORTE // Peu importe
 }
 
 /// Patient sensitivity preference (cultural/religious awareness)
 enum SensibilitePatient {
-  OUI_IMPORTANT   // Oui, c'est important pour moi
-  NON_NECESSAIRE  // Non, ce n'est pas nécessaire
-  NE_SAIS_PAS     // Je ne sais pas
+  OUI_IMPORTANT // Oui, c'est important pour moi
+  NON_NECESSAIRE // Non, ce n'est pas nécessaire
+  NE_SAIS_PAS // Je ne sais pas
 }
 
 /// Patient's past therapy experience
 enum ExperiencePassee {
-  OUI_POSITIVE          // Oui, j'ai eu une expérience positive
+  OUI_POSITIVE // Oui, j'ai eu une expérience positive
   OUI_NON_SATISFAISANTE // Oui, mais l'expérience n'était pas satisfaisante
-  NON_PREMIERE_FOIS     // Non, c'est ma première fois
-  NE_SAIS_PAS           // Je ne sais pas
+  NON_PREMIERE_FOIS // Non, c'est ma première fois
+  NE_SAIS_PAS // Je ne sais pas
 }
 
 /// Patient's expectations for therapy style
 enum AttentesTherapie {
-  ECOUTE_ACTIVE      // Quelqu'un qui m'écoute activement sans trop intervenir
-  EXERCICES_OUTILS   // Quelqu'un qui me donne des exercices et des outils concrets
-  COMPRENDRE_PASSE   // Quelqu'un qui m'aide à comprendre mon passé en profondeur
-  NE_SAIS_PAS        // Je ne sais pas encore
+  ECOUTE_ACTIVE // Quelqu'un qui m'écoute activement sans trop intervenir
+  EXERCICES_OUTILS // Quelqu'un qui me donne des exercices et des outils concrets
+  COMPRENDRE_PASSE // Quelqu'un qui m'aide à comprendre mon passé en profondeur
+  NE_SAIS_PAS // Je ne sais pas encore
 }
 
 /// Therapist's sensitivity/cultural approach
 enum SensibiliteTherapeute {
-  INTEGRE_DEMANDE    // J'intègre explicitement ces dimensions à la demande
-  LAIQUE_NEUTRE      // Mon approche est strictement laïque et neutre
-  AUTRE              // Autre
+  INTEGRE_DEMANDE // J'intègre explicitement ces dimensions à la demande
+  LAIQUE_NEUTRE // Mon approche est strictement laïque et neutre
+  AUTRE // Autre
 }
 
 /// Therapist's therapeutic approach
 enum ApprocheTherapeute {
-  TCC                // TCC (Exercices et outils concrets)
-  PSYCHANALYSE       // Psychanalyse / Psychodynamique (Exploration du passé)
-  HUMANISTE_GESTALT  // Humaniste / Gestalt (Écoute active)
-  INTEGRATIVE        // Approche intégrative (Mélange)
+  TCC // TCC (Exercices et outils concrets)
+  PSYCHANALYSE // Psychanalyse / Psychodynamique (Exploration du passé)
+  HUMANISTE_GESTALT // Humaniste / Gestalt (Écoute active)
+  INTEGRATIVE // Approche intégrative (Mélange)
 }
 
 // ============================================================================
@@ -131,7 +133,7 @@ enum ApprocheTherapeute {
 /// Available consultation modes
 model ConsultationMode {
   id    String @id @default(cuid())
-  code  String @unique // visio, audio, presentiel
+  code  String @unique // visio, chat, audio, presentiel
   label String
 
   patients   PatientConsultationMode[]
@@ -194,7 +196,7 @@ model PublicType {
 /// Patient Profile
 model Patient {
   id                  String    @id @default(cuid())
-  userId              String
+  userId              String    @unique
   dateOfBirth         DateTime? @db.Date
   gender              String?
   phone               String?
@@ -209,10 +211,10 @@ model Patient {
   updatedAt           DateTime  @updatedAt
 
   // Questionnaire single-choice responses (stored as enums)
-  genrePref           GenrePref?
-  sensibilitePatient  SensibilitePatient?
-  experiencePassee    ExperiencePassee?
-  attentesTherapie    AttentesTherapie?
+  genrePref          GenrePref?
+  sensibilitePatient SensibilitePatient?
+  experiencePassee   ExperiencePassee?
+  attentesTherapie   AttentesTherapie?
 
   // Legacy JSON backup (optional, for migration)
   questionnaireDataRaw Json? @map("questionnaire_data_raw")
@@ -228,6 +230,7 @@ model Patient {
   sessionReports SessionReport[]
   messages       Message[]       @relation("PatientMessages")
   reviews        Review[]
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("patient")
 }
@@ -235,7 +238,9 @@ model Patient {
 /// Therapist Profile
 model Therapist {
   id                   String   @id @default(cuid())
-  userId               String
+  userId               String   @unique
+  gender               String?
+  documents            String[] @default([])
   licenseNumber        String?
   licenseVerified      Boolean  @default(false)
   yearsOfExperience    Int?
@@ -268,6 +273,7 @@ model Therapist {
   sessionReports SessionReport[]
   messages       Message[]       @relation("TherapistMessages")
   reviews        Review[]
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("therapist")
 }
@@ -414,8 +420,8 @@ model Appointment {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  patient       Patient         @relation(fields: [patientId], references: [id])
-  therapist     Therapist       @relation(fields: [therapistId], references: [id])
+  patient       Patient        @relation(fields: [patientId], references: [id])
+  therapist     Therapist      @relation(fields: [therapistId], references: [id])
   sessionReport SessionReport?
   reviews       Review[]
 

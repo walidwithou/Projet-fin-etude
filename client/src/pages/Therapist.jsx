@@ -32,6 +32,7 @@ import {
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import ChatWidget from '../components/ChatWidget';
+import { removeToken } from '../services/api';
 
 class ErrorBoundary extends Component {
   constructor(props) {
@@ -512,6 +513,7 @@ function TherapistContent({ onNavigateToPage }) {
   };
 
   const handleLogout = () => {
+    removeToken();
     onNavigateToPage('LANDING');
   };
 

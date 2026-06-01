@@ -1,15 +1,14 @@
 const { prisma } = require('../db/prisma');
+const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES_IN = '7d'; // 7 days
 
 /**
  * Generate a random ID
  */
 const generateId = () => crypto.randomUUID();
-
-/**
- * Generate a session token
- */
-const generateToken = () => crypto.randomBytes(32).toString('hex');
 
 /**
  * Hash a password (simple implementation - use bcrypt in production)
@@ -19,86 +18,216 @@ const hashPassword = (password) => {
 };
 
 /**
+ * Generate JWT token
+ */
+const generateJWT = (userId, email) => {
+  return jwt.sign(
+    { id: userId, email },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
+};
+
+const REGISTRATION_ROLES = new Set(['PATIENT', 'THERAPIST']);
+
+const REGISTRATION_ENUMS = {
+  genrePref: new Set(['FEMME', 'HOMME', 'PEU_IMPORTE']),
+  sensibilitePatient: new Set(['OUI_IMPORTANT', 'NON_NECESSAIRE', 'NE_SAIS_PAS']),
+  experiencePassee: new Set(['OUI_POSITIVE', 'OUI_NON_SATISFAISANTE', 'NON_PREMIERE_FOIS', 'NE_SAIS_PAS']),
+  attentesTherapie: new Set(['ECOUTE_ACTIVE', 'EXERCICES_OUTILS', 'COMPRENDRE_PASSE', 'NE_SAIS_PAS']),
+  sensibiliteTherapeute: new Set(['INTEGRE_DEMANDE', 'LAIQUE_NEUTRE', 'AUTRE']),
+  approcheTherapeute: new Set(['TCC', 'PSYCHANALYSE', 'HUMANISTE_GESTALT', 'INTEGRATIVE']),
+};
+
+class RegistrationValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.status = 400;
+  }
+}
+
+const requireObject = (value, field) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RegistrationValidationError(`${field} must be an object`);
+  }
+
+  return value;
+};
+
+const requiredString = (value, field) => {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new RegistrationValidationError(`${field} is required`);
+  }
+
+  return value.trim();
+};
+
+const emailAddress = (value) => {
+  const email = requiredString(value, 'account.email').toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new RegistrationValidationError('account.email must be a valid email address');
+  }
+
+  return email;
+};
+
+const passwordString = (value) => {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new RegistrationValidationError('account.password is required');
+  }
+
+  return value;
+};
+
+const optionalString = (value, field) => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new RegistrationValidationError(`${field} must be a non-empty string`);
+  }
+
+  return value.trim();
+};
+
+const optionalDate = (value, field) => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new RegistrationValidationError(`${field} must be a valid date`);
+  }
+
+  return date;
+};
+
+const optionalEnum = (value, field) => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!REGISTRATION_ENUMS[field].has(value)) {
+    throw new RegistrationValidationError(`${field} has an invalid value`);
+  }
+
+  return value;
+};
+
+const stringArray = (value, field) => {
+  if (value === undefined || value === null) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    throw new RegistrationValidationError(`${field} must be an array`);
+  }
+
+  const values = value.map((entry) => requiredString(entry, `${field} entries`));
+  return [...new Set(values)];
+};
+
+const nestedLookupCreates = (relation, codes) => {
+  if (!codes.length) {
+    return undefined;
+  }
+
+  return {
+    create: codes.map((code) => ({
+      [relation]: {
+        connect: { code },
+      },
+    })),
+  };
+};
+
+const buildPatientRegistration = (profile, matching) => {
+  if (matching.publicTypes !== undefined) {
+    throw new RegistrationValidationError('matching.publicTypes is only supported for therapists');
+  }
+
+  return {
+    dateOfBirth: optionalDate(profile.dateOfBirth, 'profile.dateOfBirth'),
+    gender: optionalString(profile.gender, 'profile.gender'),
+    phone: optionalString(profile.phone, 'profile.phone'),
+    address: optionalString(profile.address, 'profile.address'),
+    wilaya: optionalString(profile.wilaya, 'profile.wilaya'),
+    emergencyContact: optionalString(profile.emergencyContact, 'profile.emergencyContact'),
+    emergencyPhone: optionalString(profile.emergencyPhone, 'profile.emergencyPhone'),
+    genrePref: optionalEnum(matching.genrePref, 'genrePref'),
+    sensibilitePatient: optionalEnum(matching.sensibilitePatient, 'sensibilitePatient'),
+    experiencePassee: optionalEnum(matching.experiencePassee, 'experiencePassee'),
+    attentesTherapie: optionalEnum(matching.attentesTherapie, 'attentesTherapie'),
+    onboardingCompleted: true,
+    questionnaireDataRaw: matching,
+    pathologies: nestedLookupCreates('pathology', stringArray(matching.pathologies, 'matching.pathologies')),
+    languages: nestedLookupCreates('language', stringArray(matching.languages, 'matching.languages')),
+    consultationModes: nestedLookupCreates('consultationMode', stringArray(matching.consultationModes, 'matching.consultationModes')),
+    timeSlots: nestedLookupCreates('timeSlot', stringArray(matching.timeSlots, 'matching.timeSlots')),
+  };
+};
+
+const buildTherapistRegistration = (profile, matching) => ({
+  gender: optionalString(profile.gender, 'profile.gender'),
+  documents: stringArray(profile.documents, 'profile.documents'),
+  sensibiliteTherapeute: optionalEnum(matching.sensibiliteTherapeute, 'sensibiliteTherapeute'),
+  approcheTherapeute: optionalEnum(matching.approcheTherapeute, 'approcheTherapeute'),
+  pathologies: nestedLookupCreates('pathology', stringArray(matching.pathologies, 'matching.pathologies')),
+  languages: nestedLookupCreates('language', stringArray(matching.languages, 'matching.languages')),
+  consultationModes: nestedLookupCreates('consultationMode', stringArray(matching.consultationModes, 'matching.consultationModes')),
+  publicTypes: nestedLookupCreates('publicType', stringArray(matching.publicTypes, 'matching.publicTypes')),
+  timeSlots: nestedLookupCreates('timeSlot', stringArray(matching.timeSlots, 'matching.timeSlots')),
+});
+
+/**
  * Register a new user
  */
 const register = async (req, res, next) => {
   try {
-    const { email, password, name, role } = req.body;
-
-    // Validate input
-    if (!email || !password || !name) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email, password, and name are required',
-      });
+    const body = requireObject(req.body, 'body');
+    const role = typeof body.role === 'string' ? body.role.toUpperCase() : '';
+    if (!REGISTRATION_ROLES.has(role)) {
+      throw new RegistrationValidationError('role must be PATIENT or THERAPIST');
     }
 
-    // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'User with this email already exists',
-      });
-    }
-
-    // Create user
+    const account = requireObject(body.account, 'account');
+    const profile = requireObject(body.profile, 'profile');
+    const matching = requireObject(body.matching, 'matching');
+    const name = requiredString(account.name, 'account.name');
+    const email = emailAddress(account.email);
+    const password = passwordString(account.password);
+    const profileRelation = role === 'PATIENT' ? 'patient' : 'therapist';
+    const profileData = role === 'PATIENT'
+      ? buildPatientRegistration(profile, matching)
+      : buildTherapistRegistration(profile, matching);
     const userId = generateId();
-    const user = await prisma.user.create({
-      data: {
-        id: userId,
-        email,
-        name,
-        emailVerified: false,
-      },
-    });
 
-    // Create account with password
-    await prisma.account.create({
-      data: {
-        id: generateId(),
-        accountId: userId,
-        providerId: 'credentials',
-        userId: user.id,
-        password: hashPassword(password),
-      },
-    });
-
-    // Create patient or therapist profile based on role
-    if (role === 'therapist') {
-      await prisma.therapist.create({
+    const user = await prisma.$transaction((transaction) => {
+      return transaction.user.create({
         data: {
-          userId: user.id,
-          verificationStatus: 'pending',
+          id: userId,
+          email,
+          name,
+          emailVerified: false,
+          accounts: {
+            create: {
+              id: generateId(),
+              accountId: userId,
+              providerId: 'credentials',
+              password: hashPassword(password),
+            },
+          },
+          [profileRelation]: {
+            create: profileData,
+          },
         },
       });
-    } else {
-      // Default to patient
-      await prisma.patient.create({
-        data: {
-          userId: user.id,
-          onboardingCompleted: false,
-        },
-      });
-    }
-
-    // Create session
-    const token = generateToken();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-
-    const session = await prisma.session.create({
-      data: {
-        id: generateId(),
-        token,
-        expiresAt,
-        userId: user.id,
-        ipAddress: req.ip,
-        userAgent: req.headers['user-agent'],
-      },
     });
+
+    // Generate JWT token
+    const token = generateJWT(user.id, user.email);
 
     res.status(201).json({
       success: true,
@@ -107,13 +236,22 @@ const register = async (req, res, next) => {
           id: user.id,
           email: user.email,
           name: user.name,
-          role: role || 'patient',
+          role: role.toLowerCase(),
         },
-        token: session.token,
-        expiresAt: session.expiresAt,
+        token,
       },
     });
   } catch (error) {
+    if (error.code === 'P2002') {
+      error.status = 409;
+      error.message = 'User with this email already exists';
+    }
+
+    if (error.code === 'P2018' || error.code === 'P2025') {
+      error.status = 400;
+      error.message = 'One or more questionnaire option codes are invalid';
+    }
+
     next(error);
   }
 };
@@ -172,20 +310,8 @@ const login = async (req, res, next) => {
       role = 'admin';
     }
 
-    // Create session
-    const token = generateToken();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
-    const session = await prisma.session.create({
-      data: {
-        id: generateId(),
-        token,
-        expiresAt,
-        userId: user.id,
-        ipAddress: req.ip,
-        userAgent: req.headers['user-agent'],
-      },
-    });
+    // Generate JWT token
+    const token = generateJWT(user.id, user.email);
 
     res.json({
       success: true,
@@ -196,8 +322,7 @@ const login = async (req, res, next) => {
           name: user.name,
           role,
         },
-        token: session.token,
-        expiresAt: session.expiresAt,
+        token,
       },
     });
   } catch (error) {
@@ -206,17 +331,10 @@ const login = async (req, res, next) => {
 };
 
 /**
- * Logout user
+ * Logout user (stateless - no action needed on backend with JWT)
  */
 const logout = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-    
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
-      await prisma.session.deleteMany({ where: { token } });
-    }
-
     res.json({
       success: true,
       message: 'Logged out successfully',
@@ -231,100 +349,35 @@ const logout = async (req, res, next) => {
  */
 const getCurrentUser = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!req.user) {
       return res.status(401).json({
         success: false,
-        message: 'No token provided',
-      });
-    }
-
-    const token = authHeader.split(' ')[1];
-
-    const session = await prisma.session.findUnique({
-      where: { token },
-      include: { user: true },
-    });
-
-    if (!session || new Date(session.expiresAt) < new Date()) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid or expired token',
+        message: 'Not authenticated',
       });
     }
 
     // Determine role
     let role = 'user';
     const [patient, therapist] = await Promise.all([
-      prisma.patient.findFirst({ where: { userId: session.user.id } }),
-      prisma.therapist.findFirst({ where: { userId: session.user.id } }),
+      prisma.patient.findFirst({ where: { userId: req.user.id } }),
+      prisma.therapist.findFirst({ where: { userId: req.user.id } }),
     ]);
 
     if (patient) role = 'patient';
     else if (therapist) role = 'therapist';
-    if (session.user.email.endsWith('@tassarut.dz') || session.user.email === 'admin@tassarut.dz') {
+    if (req.user.email.endsWith('@tassarut.dz') || req.user.email === 'admin@tassarut.dz') {
       role = 'admin';
     }
 
     res.json({
       success: true,
       data: {
-        id: session.user.id,
-        email: session.user.email,
-        name: session.user.name,
+        id: req.user.id,
+        email: req.user.email,
+        name: req.user.name,
         role,
         patientId: patient?.id,
         therapistId: therapist?.id,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Refresh token
- */
-const refreshToken = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        message: 'No token provided',
-      });
-    }
-
-    const oldToken = authHeader.split(' ')[1];
-
-    const session = await prisma.session.findUnique({
-      where: { token: oldToken },
-      include: { user: true },
-    });
-
-    if (!session) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token',
-      });
-    }
-
-    // Generate new token
-    const newToken = generateToken();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
-    await prisma.session.update({
-      where: { id: session.id },
-      data: { token: newToken, expiresAt },
-    });
-
-    res.json({
-      success: true,
-      data: {
-        token: newToken,
-        expiresAt,
       },
     });
   } catch (error) {
@@ -344,7 +397,7 @@ const forgotPassword = async (req, res, next) => {
     // Don't reveal if user exists
     if (user) {
       // Create verification token
-      const token = generateToken();
+      const token = generateId();
       await prisma.verification.create({
         data: {
           id: generateId(),
@@ -459,7 +512,6 @@ module.exports = {
   login,
   logout,
   getCurrentUser,
-  refreshToken,
   forgotPassword,
   resetPassword,
   verifyEmail,
