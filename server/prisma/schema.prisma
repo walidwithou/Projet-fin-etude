@@ -203,12 +203,13 @@ model Patient {
   emergencyContact    String?
   emergencyPhone      String?
   preferredLanguage   String?   @default("ar")
-  matchedTherapistId  String?
   onboardingCompleted Boolean   @default(false)
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
+  currentTherapistid String ?
 
   // Questionnaire single-choice responses (stored as enums)
+  currentTherapist    Therapist? @relation(fields: [currentTherapistid], references: [id])
   genrePref           GenrePref?
   sensibilitePatient  SensibilitePatient?
   experiencePassee    ExperiencePassee?
@@ -264,10 +265,12 @@ model Therapist {
   pathologies       TherapistPathology[]
 
   // Other relations
+  patients Patient[]
   appointments   Appointment[]
   sessionReports SessionReport[]
   messages       Message[]       @relation("TherapistMessages")
   reviews        Review[]
+  availableTimeSlots TherapistAvailableTimeSlot[]
 
   @@map("therapist")
 }
@@ -399,29 +402,56 @@ model TherapistPublicType {
 
 /// Appointment
 model Appointment {
-  id                 String    @id @default(cuid())
-  patientId          String
-  therapistId        String
-  scheduledAt        DateTime
-  durationMinutes    Int       @default(60)
-  status             String    @default("scheduled")
-  type               String    @default("video")
-  meetingUrl         String?
-  notes              String?
-  cancelledAt        DateTime?
-  cancelledBy        String?
-  cancellationReason String?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  id                            String    @id @default(cuid())
+  patientId                     String
+  therapistId                   String
+  
+  // Add these two lines to establish the relation:
+  therapistAvailableTimeSlotId  String    @unique // @unique ensures 1-to-1 relation
+  therapistAvailableTimeSlot    TherapistAvailableTimeSlot @relation(fields: [therapistAvailableTimeSlotId], references: [id], onDelete: Restrict)
 
-  patient       Patient         @relation(fields: [patientId], references: [id])
-  therapist     Therapist       @relation(fields: [therapistId], references: [id])
-  sessionReport SessionReport?
-  reviews       Review[]
+  // You can actually keep these for quick text queries, 
+  // but you will populate them using the startAt/endAt of the slot!
+  scheduledAt                   DateTime
+  durationMinutes               Int       @default(60)
+  
+  status                        String    @default("scheduled")
+  type                          String    @default("video")
+  meetingUrl                    String?
+  notes                         String?
+  cancelledAt                   DateTime?
+  cancelledBy                   String?
+  cancellationReason            String?
+  createdAt                     DateTime  @default(now())
+  updatedAt                     DateTime  @updatedAt
+
+  patient                       Patient   @relation(fields: [patientId], references: [id])
+  therapist                     Therapist @relation(fields: [therapistId], references: [id])
+  sessionReport                 SessionReport?
+  review                       Review?
 
   @@map("appointment")
 }
 
+// Therapist available timeslots , to configure the interactive calendar 
+model TherapistAvailableTimeSlot{
+  id          String   @id @default(cuid())
+  therapistId String
+  startAt     DateTime
+  endAt       DateTime
+  isBooked    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  therapist   Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+  
+  // Add this line:
+  appointment Appointment? 
+
+  @@index([therapistId])
+  @@index([startAt, endAt])
+  @@map("therapist_available_timeslot")
+}
 /// Session Report
 model SessionReport {
   id                 String   @id @default(cuid())

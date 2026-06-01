@@ -1,0 +1,76 @@
+<<<<<<< HEAD
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment Variables - NEVER commit these
+server/.env
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+build/
+
+# Prisma generated client
+server/node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+server/package-lock.json
+=======
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# debug information files
+*.dwo
+>>>>>>> 4f2d6e9f62f2dee4800162d293e26944f6c1c90d
