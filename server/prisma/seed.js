@@ -12,6 +12,7 @@ async function main() {
 
   // Seed Consultation Modes
   const consultationModes = [
+    { code: 'chat', label: 'Discussion par chat écrit' },
     { code: 'visio', label: 'Visioconférence' },
     { code: 'audio', label: 'Appel audio uniquement' },
     { code: 'presentiel', label: 'Présentiel' },

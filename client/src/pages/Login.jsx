@@ -4,6 +4,7 @@ import { Mail, Lock, ArrowRight, ArrowLeft, Shield } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import LeafKeyIcon from '../components/LeafKeyIcon';
+import { auth, setToken } from '../services/api';
 
 export default function Login({ onBackToRegistration, onNavigateToPage }) {
   const [formData, setFormData] = useState({
@@ -13,27 +14,28 @@ export default function Login({ onBackToRegistration, onNavigateToPage }) {
 
   const [isLoading, setIsLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [error, setError] = useState('');
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
+    setError('');
+    
+    try {
+      const response = await auth.login(formData.email, formData.password);
+      setToken(response.data.token);
       setSuccess(true);
       
-      const email = formData.email?.toLowerCase();
-      let role = 'PATIENT';
-      let nextPage = 'PATIENT';
-      if (email === 'adm@gm') {
-        role = 'ADMIN';
-        nextPage = 'ADMIN';
-      } else if (email === 'ter@gm') {
-        role = 'THERAPIST';
-        nextPage = 'THERAPIST';
-      }
-
-      setTimeout(() => currentOnNavigate(nextPage, { role }), 1500);
-    }, 1000);
+      const role = response.data.user.role.toUpperCase();
+      const nextPage = role === 'PATIENT' ? 'PATIENT' : role === 'THERAPIST' ? 'THERAPIST' : 'ADMIN';
+      
+      setTimeout(() => {
+        onNavigateToPage(nextPage, { role });
+      }, 1500);
+    } catch (err) {
+      setError(err.message || 'Erreur de connexion');
+      setIsLoading(false);
+    }
   };
 
   const currentOnNavigate = onNavigateToPage || (() => {});
@@ -63,6 +65,12 @@ export default function Login({ onBackToRegistration, onNavigateToPage }) {
 
           {!success ? (
             <form onSubmit={handleSubmit} className="space-y-6">
+              {error && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-red-600 text-sm">
+                  {error}
+                </div>
+              )}
+              
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase tracking-widest text-primary ml-1">E-mail</label>
                 <div className="relative">

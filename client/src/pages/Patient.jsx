@@ -25,6 +25,7 @@ import Header from '../components/Header';
 import Footer from '../components/Footer';
 import ChatWidget from '../components/ChatWidget';
 import SessionReport from '../components/SessionReport';
+import { removeToken } from '../services/api';
 
 const THERAPIST_SCHEDULES = {
   "Dr. Amine B.": {
@@ -365,7 +366,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
         onAbout={() => onNavigateToPage('ABOUT')}
         onHome={() => onNavigateToPage('REGISTRATION')}
         user={patientUser}
-        onLogout={() => onNavigateToPage('LANDING')}
+        onLogout={() => { removeToken(); onNavigateToPage('LANDING'); }}
         onNavigateToPage={onNavigateToPage}
       />
 

@@ -9,7 +9,9 @@ export default function Questionnaire({
   onPrev, 
   onNext, 
   onUpdateFormData,
-  role 
+  role,
+  isLoading = false,
+  error = ''
 }) {
   const currentQuestion = questions[step];
 
@@ -34,7 +36,7 @@ export default function Questionnaire({
       className="t-card"
     >
       <div className="flex justify-between items-center mb-12">
-        <button onClick={onPrev} className="p-2 hover:bg-primary-light rounded-full transition-colors">
+        <button onClick={onPrev} disabled={isLoading} className="p-2 hover:bg-primary-light rounded-full transition-colors disabled:opacity-50">
           <ArrowLeft className="w-6 h-6 text-text-muted" />
         </button>
         <div className="flex gap-1.5 flex-1 mx-8">
@@ -53,6 +55,12 @@ export default function Questionnaire({
         <h3 className="text-3xl font-bold leading-tight">{currentQuestion.subtitle}</h3>
       </div>
 
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-red-600 text-sm mb-6">
+          {error}
+        </div>
+      )}
+
       <div className="space-y-3">
         {currentQuestion.type === 'select' ? (
           <div className="relative">
@@ -60,6 +68,7 @@ export default function Questionnaire({
               className="t-select pr-12"
               value={formData[currentQuestion.field]}
               onChange={(e) => handleSelection(e.target.value)}
+              disabled={isLoading}
             >
               <option value="" className="bg-card-bg">Sélectionnez une option</option>
               {currentQuestion.options.map(opt => <option key={opt} value={opt} className="bg-card-bg">{opt}</option>)}
@@ -125,7 +134,8 @@ export default function Questionnaire({
                 <button
                   key={opt}
                   onClick={() => handleSelection(opt)}
-                  className={`t-option ${isSelected ? 'selected' : ''}`}
+                  disabled={isLoading}
+                  className={`t-option ${isSelected ? 'selected' : ''} disabled:opacity-50`}
                 >
                   <span className="font-medium">{opt}</span>
                   {isSelected && <CheckCircle2 className="w-5 h-5 text-primary" />}
@@ -140,9 +150,9 @@ export default function Questionnaire({
         <button 
           disabled={isNextDisabled()}
           onClick={onNext}
-          className="t-btn-primary"
+          className="t-btn-primary disabled:opacity-50"
         >
-          {step === questions.length - 1 ? (role === 'PATIENT' ? 'S\'inscrire et voir les matchs' : 'S\'inscrire') : 'Continuer'}
+          {isLoading ? 'Enregistrement...' : (step === questions.length - 1 ? (role === 'PATIENT' ? 'S\'inscrire et voir les matchs' : 'S\'inscrire') : 'Continuer')}
           <ArrowRight className="w-5 h-5" />
         </button>
       </div>

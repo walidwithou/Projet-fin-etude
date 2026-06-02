@@ -1,8 +1,11 @@
 const { prisma } = require('../db/prisma');
+const jwt = require('jsonwebtoken');
+
+const JWT_SECRET = process.env.JWT_SECRET;
 
 /**
  * Authentication middleware
- * Verifies the session token and attaches user to request
+ * Verifies JWT token and attaches user to request
  */
 const authenticate = async (req, res, next) => {
   try {
@@ -17,51 +20,51 @@ const authenticate = async (req, res, next) => {
 
     const token = authHeader.split(' ')[1];
 
-    // Find session by token
-    const session = await prisma.session.findUnique({
-      where: { token },
-      include: { user: true },
-    });
-
-    if (!session) {
+    // Verify JWT token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (error) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token',
+        message: 'Invalid or expired token',
       });
     }
 
-    // Check if session is expired
-    if (new Date(session.expiresAt) < new Date()) {
-      await prisma.session.delete({ where: { id: session.id } });
+    // Fetch user from database to get full info
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.id },
+    });
+
+    if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Token expired',
+        message: 'User not found',
       });
     }
 
     // Determine user role based on patient/therapist records
     let role = 'user';
     const [patient, therapist] = await Promise.all([
-      prisma.patient.findFirst({ where: { userId: session.user.id } }),
-      prisma.therapist.findFirst({ where: { userId: session.user.id } }),
+      prisma.patient.findFirst({ where: { userId: user.id } }),
+      prisma.therapist.findFirst({ where: { userId: user.id } }),
     ]);
 
     if (patient) role = 'patient';
     else if (therapist) role = 'therapist';
     
-    // Check if admin (you can customize this logic)
-    if (session.user.email.endsWith('@tassarut.dz') || session.user.email === 'admin@tassarut.dz') {
+    // Check if admin
+    if (user.email.endsWith('@tassarut.dz') || user.email === 'admin@tassarut.dz') {
       role = 'admin';
     }
 
     // Attach user and role to request
     req.user = {
-      ...session.user,
+      ...user,
       role,
       patientId: patient?.id,
       therapistId: therapist?.id,
     };
-    req.session = session;
 
     next();
   } catch (error) {

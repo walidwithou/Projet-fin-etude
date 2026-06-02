@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth.controller');
+const { authenticate } = require('../middleware/auth.middleware');
 
 // Register a new user
 router.post('/register', authController.register);
@@ -11,11 +12,8 @@ router.post('/login', authController.login);
 // Logout user
 router.post('/logout', authController.logout);
 
-// Get current user
-router.get('/me', authController.getCurrentUser);
-
-// Refresh token
-router.post('/refresh', authController.refreshToken);
+// Get current user (requires authentication)
+router.get('/me', authenticate, authController.getCurrentUser);
 
 // Request password reset
 router.post('/forgot-password', authController.forgotPassword);
