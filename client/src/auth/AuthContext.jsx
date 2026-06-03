@@ -91,23 +91,41 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(Boolean(getToken()));
   const [error, setError] = useState(null);
 
-  // Hydrate the user from the server when a token exists but the
-  // cached user object is missing. This is what happens on a hard
-  // refresh: the JWT is still in localStorage, but React state is empty.
+  // Temporary debug log to investigate the unexpected redirect on root URL.
+  // Helps verify the initial state restored from localStorage.
+  // eslint-disable-next-line no-console
+  console.log('[AuthContext][init]', {
+    hasToken: Boolean(getToken()),
+    storedUser: readStoredUser(),
+    loading: Boolean(getToken()),
+  });
+
+  // Hydrate the user from the server when a token exists. We ALWAYS
+  // verify with /auth/me on initial mount (even when a cached user is
+  // present in localStorage) so a stale token + stale cached user
+  // cannot trick the app into believing the user is signed in.
   useEffect(() => {
     let cancelled = false;
 
     const hydrate = async () => {
       const existingToken = getToken();
+
+      // eslint-disable-next-line no-console
+      console.log('[AuthContext][hydrate] start', {
+        hasToken: Boolean(existingToken),
+        hasCachedUser: Boolean(user),
+      });
+
       if (!existingToken) {
+        // No token in storage: nothing to verify. Make sure the
+        // local state is clean and we are not loading.
+        clearToken();
+        persistUser(null);
+        setSession({ token: null, user: null });
         setLoading(false);
         return;
       }
-      if (user) {
-        // Already have a cached user, no need to refetch on mount.
-        setLoading(false);
-        return;
-      }
+
       try {
         const response = await authApi.getCurrentUser();
         if (cancelled) return;
@@ -115,12 +133,34 @@ export function AuthProvider({ children }) {
         // Flatten the polymorphic profile onto the user object so
         // canAccess.js / AccessDenied.jsx keep working unchanged.
         const { token: _t, user: serverUser, profile } = response.data || {};
+        if (!serverUser) {
+          // Server answered 2xx but did not return a user — treat as
+          // unauthenticated so we never keep a ghost session.
+          // eslint-disable-next-line no-console
+          console.warn('[AuthContext][hydrate] empty user payload, clearing session');
+          clearToken();
+          persistUser(null);
+          setSession({ token: null, user: null });
+          return;
+        }
         const mergedUser = mergeUserWithProfile(serverUser, profile);
         persistUser(mergedUser);
         setSession({ token: existingToken, user: mergedUser });
+        // eslint-disable-next-line no-console
+        console.log('[AuthContext][hydrate] success', {
+          role: mergedUser?.role,
+        });
       } catch (err) {
         if (cancelled) return;
-        // The token is no longer valid — clear it and force a re-login.
+        // The token is no longer valid (401), the server is down, or
+        // the database has been purged. In every case we MUST wipe the
+        // local state so the app does not display a protected view
+        // for a user that is no longer authenticated.
+        // eslint-disable-next-line no-console
+        console.warn('[AuthContext][hydrate] failed, clearing session', {
+          status: err?.status,
+          message: err?.message,
+        });
         clearToken();
         persistUser(null);
         setSession({ token: null, user: null });

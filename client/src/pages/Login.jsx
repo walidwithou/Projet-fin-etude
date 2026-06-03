@@ -4,12 +4,14 @@ import { Mail, Lock, ArrowRight, ArrowLeft, Shield } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import LeafKeyIcon from '../components/LeafKeyIcon';
-import { auth, setToken } from '../services/api';
+import { useAuth } from '../auth/AuthContext';
+import { defaultPageForUser } from '../auth/canAccess';
 
 export default function Login({ onBackToRegistration, onNavigateToPage }) {
+  const { login } = useAuth();
   const [formData, setFormData] = useState({
     email: '',
-    password: ''
+    password: '',
   });
 
   const [isLoading, setIsLoading] = useState(false);
@@ -20,17 +22,24 @@ export default function Login({ onBackToRegistration, onNavigateToPage }) {
     e.preventDefault();
     setIsLoading(true);
     setError('');
-    
+
     try {
-      const response = await auth.login(formData.email, formData.password);
-      setToken(response.data.token);
+      // AuthContext.login() stores the JWT and the user object
+      // (including role and verificationStatus for therapists) in
+      // localStorage. The ProtectedRoute guards downstream rely on
+      // those fields to decide whether to show the page.
+      const user = await login(formData.email, formData.password);
       setSuccess(true);
-      
-      const role = response.data.user.role.toUpperCase();
-      const nextPage = role === 'PATIENT' ? 'PATIENT' : role === 'THERAPIST' ? 'THERAPIST' : 'ADMIN';
-      
+
+      // Pick the correct destination for this user.
+      // - Admins         -> ADMIN
+      // - Verified ther. -> THERAPIST
+      // - Unverified th. -> ACCESS_DENIED (with a clear message)
+      // - Patients       -> PATIENT
+      const nextPage = defaultPageForUser(user);
+
       setTimeout(() => {
-        onNavigateToPage(nextPage, { role });
+        onNavigateToPage(nextPage, { role: user.role.toUpperCase() });
       }, 1500);
     } catch (err) {
       setError(err.message || 'Erreur de connexion');
@@ -42,15 +51,15 @@ export default function Login({ onBackToRegistration, onNavigateToPage }) {
 
   return (
     <div className="min-h-screen bg-bg-main text-text-main font-sans selection:bg-primary-light">
-      <Header 
-        onLogin={() => {}} 
+      <Header
+        onLogin={() => {}}
         onAbout={() => currentOnNavigate('ABOUT')}
         onHome={() => currentOnNavigate('REGISTRATION')}
         onNavigateToPage={currentOnNavigate}
       />
 
       <main className="pt-32 pb-20 px-6 max-w-lg mx-auto">
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="t-card"
@@ -70,13 +79,13 @@ export default function Login({ onBackToRegistration, onNavigateToPage }) {
                   {error}
                 </div>
               )}
-              
+
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase tracking-widest text-primary ml-1">E-mail</label>
                 <div className="relative">
                   <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-primary opacity-40" />
-                  <input 
-                    type="email" 
+                  <input
+                    type="email"
                     className="t-input pl-12"
                     placeholder="votre@email.dz"
                     required
@@ -90,8 +99,8 @@ export default function Login({ onBackToRegistration, onNavigateToPage }) {
                 <label className="text-xs font-bold uppercase tracking-widest text-primary ml-1">Mot de passe</label>
                 <div className="relative">
                   <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-primary opacity-40" />
-                  <input 
-                    type="password" 
+                  <input
+                    type="password"
                     className="t-input pl-12"
                     placeholder="••••••••"
                     required
@@ -109,8 +118,8 @@ export default function Login({ onBackToRegistration, onNavigateToPage }) {
                 <a href="#" className="text-sm font-bold text-primary hover:underline">Oublié ?</a>
               </div>
 
-              <button 
-                type="submit" 
+              <button
+                type="submit"
                 disabled={isLoading}
                 className="t-btn-primary w-full disabled:opacity-50"
               >
@@ -132,7 +141,7 @@ export default function Login({ onBackToRegistration, onNavigateToPage }) {
             <p className="text-sm text-text-muted">
               Pas encore de compte ?
             </p>
-            <button 
+            <button
               onClick={onBackToRegistration}
               className="flex items-center gap-2 text-primary font-bold hover:underline mx-auto transition-all"
             >

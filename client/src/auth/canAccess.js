@@ -10,14 +10,33 @@
  * in the JWT, but the UI and Prisma schema use uppercase ("PATIENT",
  * "THERAPIST", "ADMIN"). We accept either form.
  */
-const normalizeRole = (role) => (typeof role === 'string' ? role.toUpperCase() : '');
+const normalizeRole = (role) =>
+  typeof role === 'string' ? role.trim().toUpperCase() : '';
+
+/**
+ * Public, anonymous landing page identifier. Used as a safe default
+ * whenever we cannot determine the user's role (e.g. before the
+ * /auth/me call has returned, or after it has failed and we are
+ * treating the user as logged out). Keeping this as a named constant
+ * makes the intent obvious and avoids the risk of returning a
+ * private route (THERAPIST, PATIENT, ADMIN) for an anonymous user.
+ */
+export const PUBLIC_LANDING_PAGE = 'REGISTRATION';
+
+/**
+ * Returns true only when the input looks like a real, usable user
+ * object (a non-null object with a string role). Defensive helper
+ * used everywhere we need to make a routing decision.
+ */
+const isValidUser = (user) =>
+  Boolean(user) && typeof user === 'object' && typeof user.role === 'string';
 
 /**
  * Determines if a user is allowed to access the admin panel.
  * Rule: role === "ADMIN"
  */
 export const canAccessAdmin = (user) => {
-  if (!user) return false;
+  if (!isValidUser(user)) return false;
   return normalizeRole(user.role) === 'ADMIN';
 };
 
@@ -26,7 +45,7 @@ export const canAccessAdmin = (user) => {
  * Rule: role === "PATIENT"
  */
 export const canAccessPatient = (user) => {
-  if (!user) return false;
+  if (!isValidUser(user)) return false;
   return normalizeRole(user.role) === 'PATIENT';
 };
 
@@ -35,7 +54,7 @@ export const canAccessPatient = (user) => {
  * Rule: role === "THERAPIST" AND verificationStatus === "verified"
  */
 export const canAccessTherapist = (user) => {
-  if (!user) return false;
+  if (!isValidUser(user)) return false;
   if (normalizeRole(user.role) !== 'THERAPIST') return false;
   return user.verificationStatus === 'verified';
 };
@@ -73,10 +92,27 @@ export const canAccess = (page, user) => {
  * Returns the default landing page for a user based on their role.
  * Used to redirect after login, after access denied, or for the
  * root URL when no page is set.
+ *
+ * SAFETY: this function MUST NEVER return a private route
+ * (THERAPIST / PATIENT / ADMIN) for an anonymous, undefined, or
+ * malformed user. If we cannot prove the user has a known role,
+ * we fall back to the public landing page so the app never
+ * accidentally exposes a private dashboard to a logged-out visitor.
  */
 export const defaultPageForUser = (user) => {
-  if (!user) return 'REGISTRATION';
+  // Guard 1 — explicit early return for the most common cases.
+  if (!user || typeof user !== 'object') {
+    return PUBLIC_LANDING_PAGE;
+  }
+
+  // Guard 2 — the user object must carry a string role. If not,
+  // we treat the session as anonymous and bounce to the landing page.
+  if (typeof user.role !== 'string' || user.role.trim() === '') {
+    return PUBLIC_LANDING_PAGE;
+  }
+
   const role = normalizeRole(user.role);
+
   if (role === 'ADMIN') return 'ADMIN';
   if (role === 'THERAPIST') {
     // Unverified therapists cannot reach THERAPIST — fall back to
@@ -87,5 +123,8 @@ export const defaultPageForUser = (user) => {
     return 'THERAPIST';
   }
   if (role === 'PATIENT') return 'PATIENT';
-  return 'REGISTRATION';
+
+  // Guard 3 — unknown role. Refuse to route to a private page and
+  // return the public landing page instead.
+  return PUBLIC_LANDING_PAGE;
 };

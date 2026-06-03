@@ -19,6 +19,12 @@ import { canAccess, defaultPageForUser } from './canAccess';
  *     own default page.
  *   - Otherwise it renders `children`.
  *
+ * SECURITY: this guard NEVER lets the child component render
+ * unless we can prove that the user is authenticated AND has
+ * access to the requested page. A null/undefined user — even when
+ * isAuthenticated happens to be true (race condition during
+ * hydration) — is treated as anonymous and triggers the redirect.
+ *
  * Usage in App.jsx:
  *
  *   if (currentPage === 'THERAPIST') {
@@ -32,19 +38,39 @@ import { canAccess, defaultPageForUser } from './canAccess';
 export default function ProtectedRoute({ page, children, onNavigate }) {
   const { user, loading, isAuthenticated } = useAuth();
 
-  const hasAccess = canAccess(page, user);
+  // Defensive: even if isAuthenticated happens to be true, we treat
+  // a missing user object as "not logged in". This prevents a brief
+  // window during hydration where a stale state could leak the
+  // protected view.
+  const effectivelyAuthenticated = Boolean(isAuthenticated && user);
+
+  const hasAccess = canAccess(page, effectivelyAuthenticated ? user : null);
+
+  // Temporary debug log — helps confirm guard decisions while we
+  // investigate the unexpected redirect to /therapist.
+  // eslint-disable-next-line no-console
+  console.log('[ProtectedRoute]', {
+    page,
+    loading,
+    isAuthenticated,
+    hasUser: Boolean(user),
+    effectivelyAuthenticated,
+    hasAccess,
+  });
 
   useEffect(() => {
     if (loading) return;
-    if (!isAuthenticated) {
-      // No session — bounce to login. We use the same navigate
+    if (!effectivelyAuthenticated) {
+      // No valid session — bounce to login. We use the same navigate
       // function the rest of the app uses to keep the URL/state
       // model consistent.
       if (typeof onNavigate === 'function') {
+        // eslint-disable-next-line no-console
+        console.log('[ProtectedRoute] redirecting to LOGIN', { page });
         onNavigate('LOGIN');
       }
     }
-  }, [loading, isAuthenticated, onNavigate]);
+  }, [loading, effectivelyAuthenticated, onNavigate, page]);
 
   // 1) Still hydrating the session from localStorage /api/auth/me
   if (loading) {
@@ -59,7 +85,9 @@ export default function ProtectedRoute({ page, children, onNavigate }) {
   }
 
   // 2) Not logged in — render nothing; the effect will redirect.
-  if (!isAuthenticated) {
+  //    We also explicitly render nothing when isAuthenticated is true
+  //    but the user object is missing (defensive).
+  if (!effectivelyAuthenticated) {
     return null;
   }
 

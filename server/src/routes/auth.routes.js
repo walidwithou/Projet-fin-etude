@@ -33,8 +33,8 @@ router.post('/register', upload.array('documents', 10), (req, res, next) => {
 // Login user
 router.post('/login', authController.login);
 
-// Logout user
-router.post('/logout', authController.logout);
+// Logout user — protected so we know which Session row to delete.
+router.post('/logout', authenticate, authController.logout);
 
 // Get current user (requires authentication)
 router.get('/me', authenticate, authController.getCurrentUser);

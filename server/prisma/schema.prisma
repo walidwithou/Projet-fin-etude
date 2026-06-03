@@ -11,6 +11,62 @@ datasource db {
 }
 
 // ============================================================================
+// ENUMS
+// ============================================================================
+
+/// User roles for authentication and authorization
+enum UserRole {
+  PATIENT
+  THERAPIST
+  ADMIN
+}
+
+/// Patient preference for therapist gender
+enum GenrePref {
+  FEMME // Une femme
+  HOMME // Un homme
+  PEU_IMPORTE // Peu importe
+}
+
+/// Patient sensitivity preference (cultural/religious awareness)
+enum SensibilitePatient {
+  OUI_IMPORTANT // Oui, c'est important pour moi
+  NON_NECESSAIRE // Non, ce n'est pas nécessaire
+  NE_SAIS_PAS // Je ne sais pas
+}
+
+/// Patient's past therapy experience
+enum ExperiencePassee {
+  OUI_POSITIVE // Oui, j'ai eu une expérience positive
+  OUI_NON_SATISFAISANTE // Oui, mais l'expérience n'était pas satisfaisante
+  NON_PREMIERE_FOIS // Non, c'est ma première fois
+  NE_SAIS_PAS // Je ne sais pas
+}
+
+/// Patient's expectations for therapy style
+enum AttentesTherapie {
+  ECOUTE_ACTIVE // Quelqu'un qui m'écoute activement sans trop intervenir
+  EXERCICES_OUTILS // Quelqu'un qui me donne des exercices et des outils concrets
+  COMPRENDRE_PASSE // Quelqu'un qui m'aide à comprendre mon passé en profondeur
+  NE_SAIS_PAS // Je ne sais pas encore
+}
+
+/// Therapist's sensitivity/cultural approach
+enum SensibiliteTherapeute {
+  INTEGRE_DEMANDE // J'intègre explicitement ces dimensions à la demande
+  LAIQUE_NEUTRE // Mon approche est strictement laïque et neutre
+  AUTRE // Autre
+}
+
+/// Therapist's therapeutic approach
+enum ApprocheTherapeute {
+  TCC // TCC (Exercices et outils concrets)
+  PSYCHANALYSE // Psychanalyse / Psychodynamique (Exploration du passé)
+  HUMANISTE_GESTALT // Humaniste / Gestalt (Écoute active)
+  INTEGRATIVE // Approche intégrative (Mélange)
+}
+
+// ============================================================================
 // BETTER AUTH TABLES (Required for authentication)
 // ============================================================================
 
@@ -20,6 +76,7 @@ model User {
   email         String   @unique
   emailVerified Boolean  @default(false)
   image         String?
+  role          UserRole @default(PATIENT)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -80,51 +137,6 @@ model Verification {
 // ============================================================================
 // QUESTIONNAIRE ENUMS (Single-choice options)
 // ============================================================================
-
-/// Patient preference for therapist gender
-enum GenrePref {
-  FEMME // Une femme
-  HOMME // Un homme
-  PEU_IMPORTE // Peu importe
-}
-
-/// Patient sensitivity preference (cultural/religious awareness)
-enum SensibilitePatient {
-  OUI_IMPORTANT // Oui, c'est important pour moi
-  NON_NECESSAIRE // Non, ce n'est pas nécessaire
-  NE_SAIS_PAS // Je ne sais pas
-}
-
-/// Patient's past therapy experience
-enum ExperiencePassee {
-  OUI_POSITIVE // Oui, j'ai eu une expérience positive
-  OUI_NON_SATISFAISANTE // Oui, mais l'expérience n'était pas satisfaisante
-  NON_PREMIERE_FOIS // Non, c'est ma première fois
-  NE_SAIS_PAS // Je ne sais pas
-}
-
-/// Patient's expectations for therapy style
-enum AttentesTherapie {
-  ECOUTE_ACTIVE // Quelqu'un qui m'écoute activement sans trop intervenir
-  EXERCICES_OUTILS // Quelqu'un qui me donne des exercices et des outils concrets
-  COMPRENDRE_PASSE // Quelqu'un qui m'aide à comprendre mon passé en profondeur
-  NE_SAIS_PAS // Je ne sais pas encore
-}
-
-/// Therapist's sensitivity/cultural approach
-enum SensibiliteTherapeute {
-  INTEGRE_DEMANDE // J'intègre explicitement ces dimensions à la demande
-  LAIQUE_NEUTRE // Mon approche est strictement laïque et neutre
-  AUTRE // Autre
-}
-
-/// Therapist's therapeutic approach
-enum ApprocheTherapeute {
-  TCC // TCC (Exercices et outils concrets)
-  PSYCHANALYSE // Psychanalyse / Psychodynamique (Exploration du passé)
-  HUMANISTE_GESTALT // Humaniste / Gestalt (Écoute active)
-  INTEGRATIVE // Approche intégrative (Mélange)
-}
 
 // ============================================================================
 // LOOKUP TABLES (Multi-select options)
