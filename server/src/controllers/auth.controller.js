@@ -1,6 +1,6 @@
-const { prisma } = require('../db/prisma');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
+import { prisma } from '../db/prisma.js';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = '7d'; // 7 days
@@ -9,6 +9,7 @@ const JWT_EXPIRES_IN = '7d'; // 7 days
  * Generate a random ID
  */
 const generateId = () => crypto.randomUUID();
+
 
 /**
  * Hash a password (simple implementation - use bcrypt in production)
@@ -171,7 +172,6 @@ const buildPatientRegistration = (profile, matching) => {
 
 const buildTherapistRegistration = (profile, matching) => ({
   gender: optionalString(profile.gender, 'profile.gender'),
-  documents: stringArray(profile.documents, 'profile.documents'),
   sensibiliteTherapeute: optionalEnum(matching.sensibiliteTherapeute, 'sensibiliteTherapeute'),
   approcheTherapeute: optionalEnum(matching.approcheTherapeute, 'approcheTherapeute'),
   pathologies: nestedLookupCreates('pathology', stringArray(matching.pathologies, 'matching.pathologies')),
@@ -204,27 +204,64 @@ const register = async (req, res, next) => {
       : buildTherapistRegistration(profile, matching);
     const userId = generateId();
 
-    const user = await prisma.$transaction((transaction) => {
-      return transaction.user.create({
-        data: {
-          id: userId,
-          email,
-          name,
-          emailVerified: false,
-          accounts: {
-            create: {
-              id: generateId(),
-              accountId: userId,
-              providerId: 'credentials',
-              password: hashPassword(password),
+    const user = await prisma.$transaction(
+      (transaction) => {
+        return transaction.user.create({
+          data: {
+            id: userId,
+            email,
+            name,
+            emailVerified: false,
+            accounts: {
+              create: {
+                id: generateId(),
+                accountId: userId,
+                providerId: 'credentials',
+                password: hashPassword(password),
+              },
+            },
+            [profileRelation]: {
+              create: profileData,
             },
           },
-          [profileRelation]: {
-            create: profileData,
+        });
+      },
+      {
+        maxWait: 10000, // 10s max to acquire a connection from the pool
+        timeout: 30000, // 30s max for the transaction to complete (Neon cloud latency)
+      }
+    );
+
+    // 3. Handle file uploads — upload to Filebase and create Document records
+    if (req.files && req.files.length > 0 && role === 'THERAPIST') {
+      // Dynamic import to avoid circular dependency issues at module level
+      const { uploadFile } = await import('../services/storage.service.js');
+      const { randomUUID } = await import('crypto');
+
+      const documentRecords = [];
+      for (const file of req.files) {
+        const uniqueId = randomUUID();
+        const extension = file.originalname.split('.').pop();
+        const objectKey = `documents/${user.id}/${uniqueId}.${extension}`;
+
+        await uploadFile(file.buffer, objectKey, file.mimetype);
+
+        const doc = await prisma.document.create({
+          data: {
+            ownerId: user.id,
+            ownerRole: 'therapist',
+            originalName: file.originalname,
+            mimeType: file.mimetype,
+            fileSize: file.size,
+            objectKey,
+            bucketName: process.env.FILEBASE_BUCKET || 'tassarutdocuments',
+            storageProvider: 'filebase',
+            documentType: 'diploma',
           },
-        },
-      });
-    });
+        });
+        documentRecords.push(doc);
+      }
+    }
 
     // Generate JWT token
     const token = generateJWT(user.id, user.email);
@@ -305,7 +342,24 @@ const login = async (req, res, next) => {
     ]);
 
     if (patient) role = 'patient';
-    else if (therapist) role = 'therapist';
+    else if (therapist) {
+      role = 'therapist';
+
+      // Restrict login for unverified therapists
+      if (therapist.verificationStatus === 'pending') {
+        return res.status(403).json({
+          success: false,
+          message: 'Votre compte est toujours en cours de vérification. Veuillez réessayer plus tard.',
+        });
+      }
+
+      if (therapist.verificationStatus === 'rejected') {
+        return res.status(403).json({
+          success: false,
+          message: 'Votre compte a été rejeté. Veuillez contacter le support pour plus d\'informations.',
+        });
+      }
+    }
     if (user.email.endsWith('@tassarut.dz') || user.email === 'admin@tassarut.dz') {
       role = 'admin';
     }
@@ -507,7 +561,7 @@ const verifyEmail = async (req, res, next) => {
   }
 };
 
-module.exports = {
+export {
   register,
   login,
   logout,

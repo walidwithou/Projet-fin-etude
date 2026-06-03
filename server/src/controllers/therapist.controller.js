@@ -1,4 +1,4 @@
-const { prisma } = require('../db/prisma');
+import { prisma } from '../db/prisma.js';
 
 /**
  * Get public list of verified therapists
@@ -484,7 +484,70 @@ const verifyTherapist = async (req, res, next) => {
   }
 };
 
-module.exports = {
+/**
+ * Upload documents (diplomas, certificates) for the authenticated therapist
+ */
+const uploadDocuments = async (req, res, next) => {
+  try {
+    const therapist = await prisma.therapist.findFirst({
+      where: { userId: req.user.id },
+    });
+
+    if (!therapist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Therapist profile not found',
+      });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No files uploaded',
+      });
+    }
+
+    // Upload each file to Filebase and create a Document record
+    const { uploadFile } = await import('../services/storage.service.js');
+    const { randomUUID } = await import('crypto');
+
+    const documents = [];
+    for (const file of req.files) {
+      const uniqueId = randomUUID();
+      const extension = file.originalname.split('.').pop();
+      const objectKey = `documents/${therapist.userId}/${uniqueId}.${extension}`;
+
+      await uploadFile(file.buffer, objectKey, file.mimetype);
+
+      const doc = await prisma.document.create({
+        data: {
+          ownerId: therapist.userId,
+          ownerRole: 'therapist',
+          originalName: file.originalname,
+          mimeType: file.mimetype,
+          fileSize: file.size,
+          objectKey,
+          bucketName: process.env.FILEBASE_BUCKET || 'tassarutdocuments',
+          storageProvider: 'filebase',
+          documentType: 'diploma',
+        },
+      });
+      documents.push(doc);
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        documents,
+        message: `${documents.length} document(s) uploaded successfully`,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export {
   getPublicTherapists,
   getPublicTherapistProfile,
   getProfile,
@@ -497,4 +560,5 @@ module.exports = {
   getAllTherapists,
   getTherapistById,
   verifyTherapist,
+  uploadDocuments,
 };

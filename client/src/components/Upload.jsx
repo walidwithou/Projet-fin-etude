@@ -1,7 +1,59 @@
+import { useState } from 'react';
 import { motion } from 'motion/react';
-import { Shield, Plus, CheckCircle2, ArrowRight } from 'lucide-react';
+import { Shield, Plus, CheckCircle2, ArrowRight, Loader2, AlertCircle, X } from 'lucide-react';
+import { therapist } from '../services/api';
 
-export default function Upload({ uploadedFiles, onFileUpload, onComplete }) {
+export default function Upload({ uploadedFiles, onFileUpload, onRemoveFile, onComplete, isLoading, error }) {
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+
+  const handleSubmit = async () => {
+    if (uploadedFiles.length === 0) return;
+
+    setUploading(true);
+    setUploadError('');
+
+    try {
+      // Build FormData from the uploaded files
+      const formData = new FormData();
+
+      // Use the File objects stored in uploadedFiles prop
+      // Registration.jsx's handleFileUpload stores { name, type, file, size } where
+      // 'file' is the actual File object from the input element
+      const fileObjects = uploadedFiles
+        .map(f => f.file)
+        .filter(Boolean);
+
+      if (fileObjects.length === 0) {
+        // Fallback: try reading from the DOM input element
+        const fileInput = document.getElementById('file-upload');
+        if (fileInput && fileInput.files && fileInput.files.length > 0) {
+          for (let i = 0; i < fileInput.files.length; i++) {
+            formData.append('documents', fileInput.files[i]);
+          }
+        } else {
+          setUploadError('Fichiers non trouvés. Veuillez les sélectionner à nouveau.');
+          setUploading(false);
+          return;
+        }
+      } else {
+        // Append all actual File objects to FormData
+        for (const file of fileObjects) {
+          formData.append('documents', file);
+        }
+      }
+
+      await therapist.uploadDocuments(formData);
+      setUploadSuccess(true);
+      setUploading(false);
+      onComplete();
+    } catch (err) {
+      setUploadError(err.message || 'Erreur lors du téléchargement');
+      setUploading(false);
+    }
+  };
+
   return (
     <motion.div 
       key="upload"
@@ -40,25 +92,58 @@ export default function Upload({ uploadedFiles, onFileUpload, onComplete }) {
         <div className="mt-8 space-y-2">
           <h4 className="text-xs font-bold uppercase tracking-wider text-primary mb-2 font-mono transition-colors">Fichiers sélectionnés</h4>
           {uploadedFiles.map((f, i) => (
-            <div key={i} className="flex items-center justify-between p-3 bg-bg-main border border-border-color rounded-xl transition-colors">
-              <div className="flex items-center gap-3">
-                <CheckCircle2 className="w-4 h-4 text-green-500" />
-                <span className="text-sm font-medium">{f.name}</span>
+            <div key={i} className="flex items-center justify-between p-3 bg-bg-main border border-border-color rounded-xl transition-colors group hover:border-red-200">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />
+                <span className="text-sm font-medium truncate">{f.name}</span>
               </div>
-              <span className="text-[10px] font-mono text-text-muted/40">{f.type}</span>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <span className="text-[10px] font-mono text-text-muted/40 hidden sm:inline">{f.type}</span>
+                <button
+                  type="button"
+                  onClick={() => onRemoveFile(i)}
+                  className="p-1.5 rounded-lg text-text-muted/30 hover:text-red-500 hover:bg-red-50 transition-colors"
+                  title="Supprimer ce fichier"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
 
+      {uploadError && (
+        <div className="mt-4 bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-red-600 text-sm flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          {uploadError}
+        </div>
+      )}
+
+      {uploadSuccess && (
+        <div className="mt-4 bg-green-500/10 border border-green-500/20 rounded-lg p-3 text-green-600 text-sm flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+          Documents téléchargés avec succès !
+        </div>
+      )}
+
       <div className="mt-12 flex justify-end">
         <button 
-          disabled={uploadedFiles.length === 0}
-          onClick={onComplete}
-          className="t-btn-primary"
+          disabled={uploadedFiles.length === 0 || uploading}
+          onClick={handleSubmit}
+          className="t-btn-primary disabled:opacity-50"
         >
-          Finaliser l'inscription
-          <ArrowRight className="w-5 h-5" />
+          {uploading ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin" />
+              Téléchargement...
+            </>
+          ) : (
+            <>
+              Finaliser l'inscription
+              <ArrowRight className="w-5 h-5" />
+            </>
+          )}
         </button>
       </div>
     </motion.div>

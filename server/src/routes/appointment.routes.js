@@ -1,7 +1,8 @@
-const express = require('express');
-const router = express.Router();
-const appointmentController = require('../controllers/appointment.controller');
-const { authenticate, authorize } = require('../middleware/auth.middleware');
+import { Router } from 'express';
+import * as appointmentController from '../controllers/appointment.controller.js';
+import { authenticate, authorize } from '../middleware/auth.middleware.js';
+
+const router = Router();
 
 // All routes require authentication
 router.use(authenticate);
@@ -33,4 +34,4 @@ router.get('/:id/report', authorize(['therapist', 'admin']), appointmentControll
 // Admin routes
 router.get('/', authorize(['admin']), appointmentController.getAll);
 
-module.exports = router;
+export default router;

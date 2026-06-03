@@ -1,5 +1,5 @@
-const { prisma } = require('../db/prisma');
-const crypto = require('crypto');
+import { prisma } from '../db/prisma.js';
+import crypto from 'crypto';
 
 const generateId = () => crypto.randomUUID();
 
@@ -421,7 +421,7 @@ const getRevenueReports = async (req, res, next) => {
   }
 };
 
-module.exports = {
+export {
   getDashboardStats,
   getAllUsers,
   getUserById,

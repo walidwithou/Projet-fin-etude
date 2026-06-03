@@ -1,5 +1,5 @@
-const { prisma } = require('../db/prisma');
-const jwt = require('jsonwebtoken');
+import { prisma } from '../db/prisma.js';
+import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -7,7 +7,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
  * Authentication middleware
  * Verifies JWT token and attaches user to request
  */
-const authenticate = async (req, res, next) => {
+export const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -80,7 +80,7 @@ const authenticate = async (req, res, next) => {
  * Authorization middleware
  * Checks if user has required role
  */
-const authorize = (allowedRoles) => {
+export const authorize = (allowedRoles) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({
@@ -99,5 +99,3 @@ const authorize = (allowedRoles) => {
     next();
   };
 };
-
-module.exports = { authenticate, authorize };

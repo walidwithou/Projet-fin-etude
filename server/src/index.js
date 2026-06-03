@@ -1,19 +1,24 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // Import routes
-const authRoutes = require('./routes/auth.routes');
-const patientRoutes = require('./routes/patient.routes');
-const therapistRoutes = require('./routes/therapist.routes');
-const appointmentRoutes = require('./routes/appointment.routes');
-const messageRoutes = require('./routes/message.routes');
-const notificationRoutes = require('./routes/notification.routes');
-const reviewRoutes = require('./routes/review.routes');
-const adminRoutes = require('./routes/admin.routes');
+import authRoutes from './routes/auth.routes.js';
+import patientRoutes from './routes/patient.routes.js';
+import therapistRoutes from './routes/therapist.routes.js';
+import appointmentRoutes from './routes/appointment.routes.js';
+import messageRoutes from './routes/message.routes.js';
+import notificationRoutes from './routes/notification.routes.js';
+import reviewRoutes from './routes/review.routes.js';
+import adminRoutes from './routes/admin.routes.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Middleware
 app.use(cors({
@@ -63,4 +68,4 @@ app.listen(PORT, () => {
   console.log(`Health check: http://localhost:${PORT}/health`);
 });
 
-module.exports = app;
+export default app;

@@ -23,6 +23,9 @@ export default function Questionnaire({
     if (currentQuestion.type === 'registration') {
       return !formData.nom || !formData.email || formData.motDePasse.length < 4;
     }
+    if (currentQuestion.type === 'profile') {
+      return !formData.dateOfBirth || !formData.phone || !formData.address;
+    }
     const val = formData[currentQuestion.field];
     return !val || (Array.isArray(val) && val.length === 0);
   };
@@ -75,6 +78,40 @@ export default function Questionnaire({
             </select>
             <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-primary">
               <ArrowRight className="w-4 h-4 rotate-90" />
+            </div>
+          </div>
+        ): currentQuestion.type === 'profile' ? (
+          <div className="grid gap-4">
+            <div className="flex flex-col md:flex-row gap-4">
+              <div className="flex-1">
+                <label className="block text-xs font-bold text-primary uppercase mb-1 ml-1">Date de naissance</label>
+                <input type="date" className="t-input" value={formData.dateOfBirth} onChange={(e) => onUpdateFormData({ dateOfBirth: e.target.value })} disabled={isLoading} />
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs font-bold text-primary uppercase mb-1 ml-1">Sexe</label>
+                <select className="t-select" value={formData.gender} onChange={(e) => onUpdateFormData({ gender: e.target.value })} disabled={isLoading}>
+                  <option value="HOMME">Homme</option>
+                  <option value="FEMME">Femme</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-primary uppercase mb-1 ml-1">Téléphone</label>
+              <input type="tel" className="t-input" placeholder="0550123456" value={formData.phone} onChange={(e) => onUpdateFormData({ phone: e.target.value })} disabled={isLoading} />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-primary uppercase mb-1 ml-1">Adresse</label>
+              <input type="text" className="t-input" placeholder="Didouche Mourad" value={formData.address} onChange={(e) => onUpdateFormData({ address: e.target.value })} disabled={isLoading} />
+            </div>
+            <div className="flex flex-col md:flex-row gap-4">
+              <div className="flex-1">
+                <label className="block text-xs font-bold text-primary uppercase mb-1 ml-1">Contact d'urgence</label>
+                <input type="text" className="t-input" placeholder="Père" value={formData.emergencyContact} onChange={(e) => onUpdateFormData({ emergencyContact: e.target.value })} disabled={isLoading} />
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs font-bold text-primary uppercase mb-1 ml-1">Tel Urgence</label>
+                <input type="tel" className="t-input" placeholder="021XXXXXX" value={formData.emergencyPhone} onChange={(e) => onUpdateFormData({ emergencyPhone: e.target.value })} disabled={isLoading} />
+              </div>
             </div>
           </div>
         ) : currentQuestion.type === 'registration' ? (

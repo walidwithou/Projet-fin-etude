@@ -7,7 +7,7 @@
  * Run after applying the Prisma migration and seeding lookup tables.
  */
 
-const { PrismaClient } = require('@prisma/client');
+import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 

@@ -54,6 +54,8 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
   const [role, setRole] = useState(initialMode === 'RESULTS' ? 'PATIENT' : null );
   const [mode, setMode] = useState(initialMode || 'LANDING');
   const [step, setStep] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [selectedTherapist, setSelectedTherapist] = useState(null);
   const [isRegistering, setIsRegistering] = useState(false);
   const [registrationError, setRegistrationError] = useState('');
@@ -70,6 +72,12 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
     modeConsultation: [],
     disponibilites: [],
     publicCible: [],
+    dateOfBirth: '',
+    gender: 'HOMME',
+    phone: '',
+    address: '',
+    emergencyContact: '',
+    emergencyPhone: ''
   });
   const [uploadedFiles, setUploadedFiles] = useState([]);
 
@@ -166,6 +174,15 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
       icon: <Target className="w-5 h-5" />
     },
     {
+      id: 'profile',
+      title: 'Informations Personnelles',
+      subtitle: 'Afin de mieux personnaliser votre dossier',
+      type: 'profile',
+      field: 'profile',
+      options: [],
+      icon: <UserCheck className="w-5 h-5" />
+    },
+    {
       id: 'registration',
       title: 'Création de compte',
       subtitle: 'Dernière étape ! Créez vos identifiants pour sauvegarder votre profil.',
@@ -232,7 +249,7 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
       subtitle: 'Quels modes de consultation proposez-vous ?',
       type: 'multiselect',
       field: 'modeConsultation',
-      options: ['Visioconférence', 'Discussion par chat écrit', 'Appel audio uniquement', 'Présentiel'],
+      options: ['Visioconférence', 'Appel audio uniquement', 'Présentiel'],
       icon: <Video className="w-5 h-5" />
     },
     {
@@ -315,7 +332,13 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
             role : 'PATIENT',
             account,
             profile: {
+              dateOfBirth: formData.dateOfBirth ? new Date(formData.dateOfBirth).toISOString() : null,
+              gender: formData.gender,
+              phone: formData.phone,
+              address: formData.address,
               wilaya: formData.wilaya,
+              emergencyContact: formData.emergencyContact,
+              emergencyPhone: formData.emergencyPhone
             },
             matching: {
               ...commonMatching,
@@ -348,6 +371,7 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
       } else {
         setMode('SUCCESS');
       }
+      setIsRegistering(false);
     } catch (err) {
       setRegistrationError(err.message || 'Erreur lors de l\'inscription');
       setIsRegistering(false);
@@ -356,9 +380,18 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
 
   const handleFileUpload = (e) => {
     if (e.target.files) {
-      const files = Array.from(e.target.files).map(f => ({ name: f.name, type: f.type }));
+      const files = Array.from(e.target.files).map(f => ({
+        name: f.name,
+        type: f.type,
+        file: f,
+        size: f.size,
+      }));
       setUploadedFiles(prev => [...prev, ...files]);
     }
+  };
+
+  const handleRemoveFile = (index) => {
+    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const prevStep = () => {
@@ -443,6 +476,7 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
             <Upload 
               uploadedFiles={uploadedFiles}
               onFileUpload={handleFileUpload}
+              onRemoveFile={handleRemoveFile}
               onComplete={() => setMode('SUCCESS')}
             />
           )}

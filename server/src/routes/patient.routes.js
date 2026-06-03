@@ -1,7 +1,8 @@
-const express = require('express');
-const router = express.Router();
-const patientController = require('../controllers/patient.controller');
-const { authenticate, authorize } = require('../middleware/auth.middleware');
+import { Router } from 'express';
+import * as patientController from '../controllers/patient.controller.js';
+import { authenticate, authorize } from '../middleware/auth.middleware.js';
+
+const router = Router();
 
 // All routes require authentication
 router.use(authenticate);
@@ -31,4 +32,4 @@ router.get('/session-reports', authorize(['patient']), patientController.getSess
 router.get('/', authorize(['admin']), patientController.getAllPatients);
 router.get('/:id', authorize(['admin', 'therapist']), patientController.getPatientById);
 
-module.exports = router;
+export default router;

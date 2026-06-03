@@ -1,4 +1,4 @@
-const { prisma } = require('../db/prisma');
+import { prisma } from '../db/prisma.js';
 
 /**
  * Get patient profile with questionnaire data
@@ -417,9 +417,6 @@ const getMatchedTherapists = async (req, res, next) => {
         matchReasons.push('Sensibilité culturelle/spirituelle');
       }
 
-      // Match gender preference (10 points) - would need therapist gender field
-      // Skipped for now as therapist gender is not in the current schema
-
       // Boost for higher ratings (up to 25 points)
       if (therapist.rating) {
         matchScore += parseFloat(therapist.rating) * 5;
@@ -670,7 +667,7 @@ const getPatientById = async (req, res, next) => {
   }
 };
 
-module.exports = {
+export {
   getProfile,
   updateProfile,
   submitQuestionnaire,

@@ -1,4 +1,4 @@
-const { prisma } = require('../db/prisma');
+import { prisma } from '../db/prisma.js';
 
 /**
  * Get all notifications for the current user
@@ -153,10 +153,10 @@ const deleteNotification = async (req, res, next) => {
   }
 };
 
-module.exports = {
+export {
   getAll,
   getUnreadCount,
   markAsRead,
   markAllAsRead,
-  delete: deleteNotification,
+  deleteNotification as delete,
 };

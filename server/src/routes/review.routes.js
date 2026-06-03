@@ -1,7 +1,8 @@
-const express = require('express');
-const router = express.Router();
-const reviewController = require('../controllers/review.controller');
-const { authenticate, authorize } = require('../middleware/auth.middleware');
+import { Router } from 'express';
+import * as reviewController from '../controllers/review.controller.js';
+import { authenticate, authorize } from '../middleware/auth.middleware.js';
+
+const router = Router();
 
 // Public routes
 router.get('/therapist/:therapistId', reviewController.getTherapistReviews);
@@ -22,4 +23,4 @@ router.delete('/:id', authorize(['patient']), reviewController.delete);
 router.get('/', authorize(['admin']), reviewController.getAll);
 router.put('/:id/visibility', authorize(['admin']), reviewController.toggleVisibility);
 
-module.exports = router;
+export default router;

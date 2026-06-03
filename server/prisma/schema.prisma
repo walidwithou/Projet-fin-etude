@@ -228,9 +228,7 @@ model Patient {
 
   // Other relations
   appointments   Appointment[]
-  sessionReports SessionReport[]
   messages       Message[]       @relation("PatientMessages")
-  reviews        Review[]
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("patient")
@@ -241,11 +239,11 @@ model Therapist {
   id                   String   @id @default(cuid())
   userId               String   @unique
   gender               String?
-  documents            String[] @default([])
-  licenseNumber        String?
-  licenseVerified      Boolean  @default(false)
-  yearsOfExperience    Int?
-  education            String?
+ 
+
+  // New Document relation (Filebase-backed S3-compatible storage)
+  documentFiles        Document[] @relation("TherapistDocuments")
+
   bio                  String?
   profilePhotoUrl      String?
   hourlyRate           Decimal? @db.Decimal(10, 2)
@@ -272,13 +270,55 @@ model Therapist {
   // Other relations
   patients Patient[]
   appointments   Appointment[]
-  sessionReports SessionReport[]
   messages       Message[]       @relation("TherapistMessages")
-  reviews        Review[]
   availableTimeSlots TherapistAvailableTimeSlot[]
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("therapist")
+}
+
+// ============================================================================
+// DOCUMENT STORAGE (Filebase-backed)
+// ============================================================================
+
+/// Represents an uploaded document (diploma, certificate, etc.)
+/// Files are stored in Filebase (S3-compatible) decentralized storage.
+/// The database stores metadata + the cloud object key.
+/// Secure retrieval uses S3 presigned URLs — never routes file binaries
+/// through the Express server.
+model Document {
+  id              String   @id @default(cuid())
+
+  // === Polymorphic Ownership ===
+  // "ownerId" stores the userId of the document owner (therapist initially)
+  // "ownerRole" discriminates: "therapist" | "patient" | "admin"
+  ownerId         String
+  ownerRole       String   @default("therapist")
+
+  // === File Metadata (from original upload) ===
+  originalName    String   // e.g. "diplome-psychologie.pdf"
+  mimeType        String   // e.g. "application/pdf"
+  fileSize        Int      // bytes
+
+  // === Filebase Cloud Storage Reference ===
+  objectKey       String   @unique // Unique key in Filebase bucket, e.g. "documents/{userId}/{uuid}.pdf"
+  bucketName      String   // The Filebase bucket name (from env)
+  storageProvider String   @default("filebase") // "filebase" | "s3" | "gcs" | "local" (legacy)
+
+  // === Document Classification ===
+  documentType    String?  // "diploma", "license", "id_card", "certificate", "other"
+
+  // === Timestamps ===
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // === Relations ===
+  therapist       Therapist? @relation("TherapistDocuments", fields: [ownerId], references: [userId], onDelete: Cascade, map: "document_therapist_fkey")
+
+  @@index([ownerId, ownerRole])
+  @@index([documentType])
+  @@index([createdAt])
+  @@map("document")
 }
 
 // ============================================================================
@@ -411,35 +451,29 @@ model Appointment {
   id                            String    @id @default(cuid())
   patientId                     String
   therapistId                   String
-  
-  // Add these two lines to establish the relation:
+
   therapistAvailableTimeSlotId  String    @unique // @unique ensures 1-to-1 relation
   therapistAvailableTimeSlot    TherapistAvailableTimeSlot @relation(fields: [therapistAvailableTimeSlotId], references: [id], onDelete: Restrict)
 
-  // You can actually keep these for quick text queries, 
-  // but you will populate them using the startAt/endAt of the slot!
   scheduledAt                   DateTime
   durationMinutes               Int       @default(60)
-  
+
   status                        String    @default("scheduled")
   type                          String    @default("video")
-  meetingUrl                    String?
   notes                         String?
   cancelledAt                   DateTime?
   cancelledBy                   String?
-  cancellationReason            String?
   createdAt                     DateTime  @default(now())
   updatedAt                     DateTime  @updatedAt
 
   patient                       Patient   @relation(fields: [patientId], references: [id])
   therapist                     Therapist @relation(fields: [therapistId], references: [id])
-  sessionReport                 SessionReport?
-  review                       Review?
+  appointmentOutcome            AppointmentOutcome?
 
   @@map("appointment")
 }
 
-// Therapist available timeslots , to configure the interactive calendar 
+// Therapist available timeslots, to configure the interactive calendar
 model TherapistAvailableTimeSlot{
   id          String   @id @default(cuid())
   therapistId String
@@ -450,39 +484,14 @@ model TherapistAvailableTimeSlot{
   updatedAt   DateTime @updatedAt
 
   therapist   Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
-  
-  // Add this line:
-  appointment Appointment? 
+
+  appointment Appointment?
 
   @@index([therapistId])
   @@index([startAt, endAt])
   @@map("therapist_available_timeslot")
 }
-/// Session Report
-model SessionReport {
-  id                 String   @id @default(cuid())
-  appointmentId      String   @unique
-  therapistId        String
-  patientId          String
-  sessionDate        DateTime
-  presentingIssues   String?
-  sessionNotes       String?
-  interventionsUsed  String[]
-  progressAssessment String?
-  moodRating         Int?
-  homeworkAssigned   String?
-  nextSessionGoals   String?
-  riskAssessment     String?
-  isConfidential     Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
 
-  appointment Appointment @relation(fields: [appointmentId], references: [id])
-  therapist   Therapist   @relation(fields: [therapistId], references: [id])
-  patient     Patient     @relation(fields: [patientId], references: [id])
-
-  @@map("session_report")
-}
 
 /// Message
 model Message {
@@ -522,24 +531,30 @@ model Notification {
   @@map("notification")
 }
 
-/// Review
-model Review {
-  id            String   @id @default(cuid())
-  patientId     String
-  therapistId   String
-  appointmentId String? @unique
-  rating        Int
-  comment       String?
-  isAnonymous   Boolean  @default(false)
-  isVisible     Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+model AppointmentOutcome {
+  id                 String   @id @default(cuid())
+  appointmentId      String   @unique
+  appointment        Appointment @relation(fields: [appointmentId], references: [id])
 
-  patient     Patient      @relation(fields: [patientId], references: [id])
-  therapist   Therapist    @relation(fields: [therapistId], references: [id])
-  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+  // === Clinical Report Section (Therapist Only) ===
+  sessionNotes       String?
+  interventionsUsed  String[]
+  progressAssessment String?
+  riskAssessment     String?
+  isConfidential     Boolean  @default(true)
 
-  @@map("review")
+  
+
+  // === Review Section (Patient Only - Optional) ===
+  rating             Int?     // Must be optional now, as patients might not leave a review
+  comment            String?
+  isAnonymous        Boolean  @default(false)
+  isVisible          Boolean  @default(true)
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("appointment_outcome")
 }
 
 /// Audit Log

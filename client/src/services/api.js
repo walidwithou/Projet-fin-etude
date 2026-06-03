@@ -4,27 +4,42 @@ const getToken = () => localStorage.getItem('token');
 const setToken = (token) => localStorage.setItem('token', token);
 const removeToken = () => localStorage.removeItem('token');
 
-const getAuthHeaders = () => {
+const getAuthHeaders = (isFormData = false) => {
   const token = getToken();
-  return {
-    'Content-Type': 'application/json',
-    ...(token && { 'Authorization': `Bearer ${token}` }),
-  };
+  const headers = {};
+  if (!isFormData) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
 };
 
 export const apiCall = async (endpoint, options = {}) => {
   const url = `${API_URL}${endpoint}`;
+  const isFormData = options.body instanceof FormData;
   const response = await fetch(url, {
     ...options,
-    headers: getAuthHeaders(),
+    headers: {
+      ...getAuthHeaders(isFormData),
+      ...options.headers,
+    },
   });
 
   if (!response.ok) {
-    const error = await response.json();
+    const error = await response.json().catch(() => ({ message: `API Error: ${response.status}` }));
     throw new Error(error.message || `API Error: ${response.status}`);
   }
 
   return response.json();
+};
+
+const apiUpload = async (endpoint, formData) => {
+  return apiCall(endpoint, {
+    method: 'POST',
+    body: formData,
+  });
 };
 
 export const auth = {
@@ -60,6 +75,10 @@ export const auth = {
     method: 'POST',
     body: JSON.stringify({ token }),
   }),
+};
+
+export const therapist = {
+  uploadDocuments: (formData) => apiUpload('/therapists/documents', formData),
 };
 
 export { getToken, setToken, removeToken };

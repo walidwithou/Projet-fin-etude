@@ -1,7 +1,8 @@
-const express = require('express');
-const router = express.Router();
-const messageController = require('../controllers/message.controller');
-const { authenticate, authorize } = require('../middleware/auth.middleware');
+import { Router } from 'express';
+import * as messageController from '../controllers/message.controller.js';
+import { authenticate, authorize } from '../middleware/auth.middleware.js';
+
+const router = Router();
 
 // All routes require authentication
 router.use(authenticate);
@@ -24,4 +25,4 @@ router.put('/conversations/:conversationId/read-all', authorize(['patient', 'the
 // Get unread message count
 router.get('/unread-count', authorize(['patient', 'therapist']), messageController.getUnreadCount);
 
-module.exports = router;
+export default router;

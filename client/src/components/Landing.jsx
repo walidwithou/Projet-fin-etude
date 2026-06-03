@@ -33,7 +33,7 @@ export default function Landing({ onSelectRole }) {
         </button>
 
         <button 
-          onClick={() => onSelectRole('THERAPEUTE')}
+          onClick={() => onSelectRole('THERAPIST')}
           className="t-card border-2 border-border-color p-8 overflow-hidden flex flex-col justify-between h-full hover:bg-bg-main hover:scale-[1.02] transition-all"
         >
           <div className="relative z-10">

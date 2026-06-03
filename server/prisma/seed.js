@@ -3,7 +3,7 @@
  * Populates lookup tables with questionnaire options
  */
 
-const { PrismaClient } = require('@prisma/client');
+import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
