@@ -1,6 +1,3 @@
-// Prisma Schema for Tassarut Platform
-// Teleconsultation and Online Therapy Platform for Algeria
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,23 +7,19 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ============================================================================
-// BETTER AUTH TABLES (Required for authentication)
-// ============================================================================
-
 model User {
-  id            String   @id
+  id            String     @id
   name          String
-  email         String   @unique
-  emailVerified Boolean  @default(false)
+  email         String     @unique
+  emailVerified Boolean    @default(false)
   image         String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  sessions  Session[]
-  accounts  Account[]
-  patient   Patient?
-  therapist Therapist?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  role          UserRole   @default(PATIENT)
+  accounts      Account[]
+  patient       Patient?
+  sessions      Session[]
+  therapist     Therapist?
 
   @@map("user")
 }
@@ -40,8 +33,7 @@ model Session {
   ipAddress String?
   userAgent String?
   userId    String
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("session")
 }
@@ -60,8 +52,7 @@ model Account {
   password              String?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("account")
 }
@@ -77,65 +68,11 @@ model Verification {
   @@map("verification")
 }
 
-// ============================================================================
-// QUESTIONNAIRE ENUMS (Single-choice options)
-// ============================================================================
-
-/// Patient preference for therapist gender
-enum GenrePref {
-  FEMME // Une femme
-  HOMME // Un homme
-  PEU_IMPORTE // Peu importe
-}
-
-/// Patient sensitivity preference (cultural/religious awareness)
-enum SensibilitePatient {
-  OUI_IMPORTANT // Oui, c'est important pour moi
-  NON_NECESSAIRE // Non, ce n'est pas nécessaire
-  NE_SAIS_PAS // Je ne sais pas
-}
-
-/// Patient's past therapy experience
-enum ExperiencePassee {
-  OUI_POSITIVE // Oui, j'ai eu une expérience positive
-  OUI_NON_SATISFAISANTE // Oui, mais l'expérience n'était pas satisfaisante
-  NON_PREMIERE_FOIS // Non, c'est ma première fois
-  NE_SAIS_PAS // Je ne sais pas
-}
-
-/// Patient's expectations for therapy style
-enum AttentesTherapie {
-  ECOUTE_ACTIVE // Quelqu'un qui m'écoute activement sans trop intervenir
-  EXERCICES_OUTILS // Quelqu'un qui me donne des exercices et des outils concrets
-  COMPRENDRE_PASSE // Quelqu'un qui m'aide à comprendre mon passé en profondeur
-  NE_SAIS_PAS // Je ne sais pas encore
-}
-
-/// Therapist's sensitivity/cultural approach
-enum SensibiliteTherapeute {
-  INTEGRE_DEMANDE // J'intègre explicitement ces dimensions à la demande
-  LAIQUE_NEUTRE // Mon approche est strictement laïque et neutre
-  AUTRE // Autre
-}
-
-/// Therapist's therapeutic approach
-enum ApprocheTherapeute {
-  TCC // TCC (Exercices et outils concrets)
-  PSYCHANALYSE // Psychanalyse / Psychodynamique (Exploration du passé)
-  HUMANISTE_GESTALT // Humaniste / Gestalt (Écoute active)
-  INTEGRATIVE // Approche intégrative (Mélange)
-}
-
-// ============================================================================
-// LOOKUP TABLES (Multi-select options)
-// ============================================================================
-
 /// Available consultation modes
 model ConsultationMode {
-  id    String @id @default(cuid())
-  code  String @unique // visio, chat, audio, presentiel
-  label String
-
+  id         String                      @id @default(cuid())
+  code       String                      @unique
+  label      String
   patients   PatientConsultationMode[]
   therapists TherapistConsultationMode[]
 
@@ -144,10 +81,9 @@ model ConsultationMode {
 
 /// Available time slots
 model TimeSlot {
-  id    String @id @default(cuid())
-  code  String @unique // matin, apres_midi, soiree, weekend
-  label String
-
+  id         String              @id @default(cuid())
+  code       String              @unique
+  label      String
   patients   PatientTimeSlot[]
   therapists TherapistTimeSlot[]
 
@@ -156,10 +92,9 @@ model TimeSlot {
 
 /// Available languages
 model Language {
-  id    String @id @default(cuid())
-  code  String @unique // ar_darja, ar_fusha, tamazight, fr, en
-  label String
-
+  id         String              @id @default(cuid())
+  code       String              @unique
+  label      String
   patients   PatientLanguage[]
   therapists TherapistLanguage[]
 
@@ -168,10 +103,9 @@ model Language {
 
 /// Available pathologies/issues
 model Pathology {
-  id    String @id @default(cuid())
-  code  String @unique // stress_anxiete, depression, etc.
-  label String
-
+  id         String               @id @default(cuid())
+  code       String               @unique
+  label      String
   patients   PatientPathology[]
   therapists TherapistPathology[]
 
@@ -180,106 +114,79 @@ model Pathology {
 
 /// Target audience types (therapist specialization)
 model PublicType {
-  id    String @id @default(cuid())
-  code  String @unique // enfants_adolescents, adultes, couples, personnes_agees, tous_publics
-  label String
-
+  id         String                @id @default(cuid())
+  code       String                @unique
+  label      String
   therapists TherapistPublicType[]
 
   @@map("public_type")
 }
 
-// ============================================================================
-// TASSARUT PLATFORM TABLES
-// ============================================================================
-
 /// Patient Profile
 model Patient {
-  id                  String    @id @default(cuid())
-  userId              String    @unique
-  dateOfBirth         DateTime? @db.Date
-  gender              String?
-  phone               String?
-  address             String?
-  wilaya              String?
-  emergencyContact    String?
-  emergencyPhone      String?
-  preferredLanguage   String?   @default("ar")
-  onboardingCompleted Boolean   @default(false)
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
-  currentTherapistid String ?
-
-  // Questionnaire single-choice responses (stored as enums)
-  currentTherapist    Therapist? @relation(fields: [currentTherapistid], references: [id])
-  genrePref           GenrePref?
-  sensibilitePatient  SensibilitePatient?
-  experiencePassee    ExperiencePassee?
-  attentesTherapie    AttentesTherapie?
-
-  // Legacy JSON backup (optional, for migration)
-  questionnaireDataRaw Json? @map("questionnaire_data_raw")
-
-  // Multi-select questionnaire relations
-  consultationModes PatientConsultationMode[]
-  timeSlots         PatientTimeSlot[]
-  languages         PatientLanguage[]
-  pathologies       PatientPathology[]
-
-  // Other relations
-  appointments   Appointment[]
-  messages       Message[]       @relation("PatientMessages")
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                   String                    @id @default(cuid())
+  userId               String                    @unique
+  dateOfBirth          DateTime?                 @db.Date
+  gender               String?
+  phone                String?
+  address              String?
+  wilaya               String?
+  emergencyContact     String?
+  emergencyPhone       String?
+  preferredLanguage    String?                   @default("ar")
+  onboardingCompleted  Boolean                   @default(false)
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  currentTherapistid   String?
+  genrePref            GenrePref?
+  sensibilitePatient   SensibilitePatient?
+  experiencePassee     ExperiencePassee?
+  attentesTherapie     AttentesTherapie?
+  questionnaireDataRaw Json?                     @map("questionnaire_data_raw")
+  appointments         Appointment[]
+  messages             Message[]                 @relation("PatientMessages")
+  currentTherapist     Therapist?                @relation(fields: [currentTherapistid], references: [id])
+  user                 User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  consultationModes    PatientConsultationMode[]
+  languages            PatientLanguage[]
+  pathologies          PatientPathology[]
+  timeSlots            PatientTimeSlot[]
 
   @@map("patient")
 }
 
 /// Therapist Profile
 model Therapist {
-  id                   String   @id @default(cuid())
-  userId               String   @unique
-  gender               String?
- 
-
-  // New Document relation (Filebase-backed S3-compatible storage)
-  documentFiles        Document[] @relation("TherapistDocuments")
-
-  bio                  String?
-  profilePhotoUrl      String?
-  hourlyRate           Decimal? @db.Decimal(10, 2)
-  currency             String?  @default("DZD")
-  availability         Json?
-  acceptingNewPatients Boolean  @default(true)
-  rating               Decimal? @db.Decimal(3, 2)
-  totalReviews         Int      @default(0)
-  verificationStatus   String   @default("pending")
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-
-  // Questionnaire single-choice responses (stored as enums)
+  id                    String                       @id @default(cuid())
+  userId                String                       @unique
+  gender                String?
+  bio                   String?
+  profilePhotoUrl       String?
+  hourlyRate            Decimal?                     @db.Decimal(10, 2)
+  currency              String?                      @default("DZD")
+  availability          Json?
+  acceptingNewPatients  Boolean                      @default(true)
+  rating                Decimal?                     @db.Decimal(3, 2)
+  totalReviews          Int                          @default(0)
+  verificationStatus    String                       @default("pending")
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
   sensibiliteTherapeute SensibiliteTherapeute?
   approcheTherapeute    ApprocheTherapeute?
-
-  // Multi-select questionnaire relations
-  publicTypes       TherapistPublicType[]
-  consultationModes TherapistConsultationMode[]
-  timeSlots         TherapistTimeSlot[]
-  languages         TherapistLanguage[]
-  pathologies       TherapistPathology[]
-
-  // Other relations
-  patients Patient[]
-  appointments   Appointment[]
-  messages       Message[]       @relation("TherapistMessages")
-  availableTimeSlots TherapistAvailableTimeSlot[]
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  appointments          Appointment[]
+  documentFiles         Document[]                   @relation("TherapistDocuments")
+  messages              Message[]                    @relation("TherapistMessages")
+  patients              Patient[]
+  user                  User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  availableTimeSlots    TherapistAvailableTimeSlot[]
+  consultationModes     TherapistConsultationMode[]
+  languages             TherapistLanguage[]
+  pathologies           TherapistPathology[]
+  publicTypes           TherapistPublicType[]
+  timeSlots             TherapistTimeSlot[]
 
   @@map("therapist")
 }
-
-// ============================================================================
-// DOCUMENT STORAGE (Filebase-backed)
-// ============================================================================
 
 /// Represents an uploaded document (diploma, certificate, etc.)
 /// Files are stored in Filebase (S3-compatible) decentralized storage.
@@ -287,33 +194,19 @@ model Therapist {
 /// Secure retrieval uses S3 presigned URLs — never routes file binaries
 /// through the Express server.
 model Document {
-  id              String   @id @default(cuid())
-
-  // === Polymorphic Ownership ===
-  // "ownerId" stores the userId of the document owner (therapist initially)
-  // "ownerRole" discriminates: "therapist" | "patient" | "admin"
+  id              String    @id @default(cuid())
   ownerId         String
-  ownerRole       String   @default("therapist")
-
-  // === File Metadata (from original upload) ===
-  originalName    String   // e.g. "diplome-psychologie.pdf"
-  mimeType        String   // e.g. "application/pdf"
-  fileSize        Int      // bytes
-
-  // === Filebase Cloud Storage Reference ===
-  objectKey       String   @unique // Unique key in Filebase bucket, e.g. "documents/{userId}/{uuid}.pdf"
-  bucketName      String   // The Filebase bucket name (from env)
-  storageProvider String   @default("filebase") // "filebase" | "s3" | "gcs" | "local" (legacy)
-
-  // === Document Classification ===
-  documentType    String?  // "diploma", "license", "id_card", "certificate", "other"
-
-  // === Timestamps ===
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  // === Relations ===
-  therapist       Therapist? @relation("TherapistDocuments", fields: [ownerId], references: [userId], onDelete: Cascade, map: "document_therapist_fkey")
+  ownerRole       String    @default("therapist")
+  originalName    String
+  mimeType        String
+  fileSize        Int
+  objectKey       String    @unique
+  bucketName      String
+  storageProvider String    @default("filebase")
+  documentType    String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  therapist       Therapist @relation("TherapistDocuments", fields: [ownerId], references: [userId], onDelete: Cascade, map: "document_therapist_fkey")
 
   @@index([ownerId, ownerRole])
   @@index([documentType])
@@ -321,18 +214,13 @@ model Document {
   @@map("document")
 }
 
-// ============================================================================
-// JOIN TABLES (Many-to-Many Relations)
-// ============================================================================
-
 /// Patient - Consultation Mode (many-to-many)
 model PatientConsultationMode {
-  id                 String @id @default(cuid())
+  id                 String           @id @default(cuid())
   patientId          String
   consultationModeId String
-
-  patient          Patient          @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  consultationMode ConsultationMode @relation(fields: [consultationModeId], references: [id], onDelete: Cascade)
+  consultationMode   ConsultationMode @relation(fields: [consultationModeId], references: [id], onDelete: Cascade)
+  patient            Patient          @relation(fields: [patientId], references: [id], onDelete: Cascade)
 
   @@unique([patientId, consultationModeId])
   @@map("patient_consultation_mode")
@@ -340,12 +228,11 @@ model PatientConsultationMode {
 
 /// Therapist - Consultation Mode (many-to-many)
 model TherapistConsultationMode {
-  id                 String @id @default(cuid())
+  id                 String           @id @default(cuid())
   therapistId        String
   consultationModeId String
-
-  therapist        Therapist        @relation(fields: [therapistId], references: [id], onDelete: Cascade)
-  consultationMode ConsultationMode @relation(fields: [consultationModeId], references: [id], onDelete: Cascade)
+  consultationMode   ConsultationMode @relation(fields: [consultationModeId], references: [id], onDelete: Cascade)
+  therapist          Therapist        @relation(fields: [therapistId], references: [id], onDelete: Cascade)
 
   @@unique([therapistId, consultationModeId])
   @@map("therapist_consultation_mode")
@@ -353,12 +240,11 @@ model TherapistConsultationMode {
 
 /// Patient - Time Slot (many-to-many)
 model PatientTimeSlot {
-  id         String @id @default(cuid())
+  id         String   @id @default(cuid())
   patientId  String
   timeSlotId String
-
-  patient  Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  timeSlot TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+  patient    Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
 
   @@unique([patientId, timeSlotId])
   @@map("patient_time_slot")
@@ -366,12 +252,11 @@ model PatientTimeSlot {
 
 /// Therapist - Time Slot (many-to-many)
 model TherapistTimeSlot {
-  id          String @id @default(cuid())
+  id          String    @id @default(cuid())
   therapistId String
   timeSlotId  String
-
-  therapist Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
-  timeSlot  TimeSlot  @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+  therapist   Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+  timeSlot    TimeSlot  @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
 
   @@unique([therapistId, timeSlotId])
   @@map("therapist_time_slot")
@@ -379,12 +264,11 @@ model TherapistTimeSlot {
 
 /// Patient - Language (many-to-many)
 model PatientLanguage {
-  id         String @id @default(cuid())
+  id         String   @id @default(cuid())
   patientId  String
   languageId String
-
-  patient  Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  language Language @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  language   Language @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  patient    Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
 
   @@unique([patientId, languageId])
   @@map("patient_language")
@@ -392,12 +276,11 @@ model PatientLanguage {
 
 /// Therapist - Language (many-to-many)
 model TherapistLanguage {
-  id          String @id @default(cuid())
+  id          String    @id @default(cuid())
   therapistId String
   languageId  String
-
-  therapist Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
-  language  Language  @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  language    Language  @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  therapist   Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
 
   @@unique([therapistId, languageId])
   @@map("therapist_language")
@@ -405,12 +288,11 @@ model TherapistLanguage {
 
 /// Patient - Pathology (many-to-many)
 model PatientPathology {
-  id          String @id @default(cuid())
+  id          String    @id @default(cuid())
   patientId   String
   pathologyId String
-
-  patient   Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  pathology Pathology @relation(fields: [pathologyId], references: [id], onDelete: Cascade)
+  pathology   Pathology @relation(fields: [pathologyId], references: [id], onDelete: Cascade)
+  patient     Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
 
   @@unique([patientId, pathologyId])
   @@map("patient_pathology")
@@ -418,12 +300,11 @@ model PatientPathology {
 
 /// Therapist - Pathology expertise (many-to-many)
 model TherapistPathology {
-  id          String @id @default(cuid())
+  id          String    @id @default(cuid())
   therapistId String
   pathologyId String
-
-  therapist Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
-  pathology Pathology @relation(fields: [pathologyId], references: [id], onDelete: Cascade)
+  pathology   Pathology @relation(fields: [pathologyId], references: [id], onDelete: Cascade)
+  therapist   Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
 
   @@unique([therapistId, pathologyId])
   @@map("therapist_pathology")
@@ -431,67 +312,54 @@ model TherapistPathology {
 
 /// Therapist - Public Type (many-to-many)
 model TherapistPublicType {
-  id           String @id @default(cuid())
+  id           String     @id @default(cuid())
   therapistId  String
   publicTypeId String
-
-  therapist  Therapist  @relation(fields: [therapistId], references: [id], onDelete: Cascade)
-  publicType PublicType @relation(fields: [publicTypeId], references: [id], onDelete: Cascade)
+  publicType   PublicType @relation(fields: [publicTypeId], references: [id], onDelete: Cascade)
+  therapist    Therapist  @relation(fields: [therapistId], references: [id], onDelete: Cascade)
 
   @@unique([therapistId, publicTypeId])
   @@map("therapist_public_type")
 }
 
-// ============================================================================
-// OTHER PLATFORM TABLES
-// ============================================================================
-
 /// Appointment
 model Appointment {
-  id                            String    @id @default(cuid())
-  patientId                     String
-  therapistId                   String
-
-  therapistAvailableTimeSlotId  String    @unique // @unique ensures 1-to-1 relation
-  therapistAvailableTimeSlot    TherapistAvailableTimeSlot @relation(fields: [therapistAvailableTimeSlotId], references: [id], onDelete: Restrict)
-
-  scheduledAt                   DateTime
-  durationMinutes               Int       @default(60)
-
-  status                        String    @default("scheduled")
-  type                          String    @default("video")
-  notes                         String?
-  cancelledAt                   DateTime?
-  cancelledBy                   String?
-  createdAt                     DateTime  @default(now())
-  updatedAt                     DateTime  @updatedAt
-
-  patient                       Patient   @relation(fields: [patientId], references: [id])
-  therapist                     Therapist @relation(fields: [therapistId], references: [id])
-  appointmentOutcome            AppointmentOutcome?
+  id                           String                     @id @default(cuid())
+  patientId                    String
+  therapistId                  String
+  therapistAvailableTimeSlotId String                     @unique
+  scheduledAt                  DateTime
+  durationMinutes              Int                        @default(60)
+  status                       String                     @default("scheduled")
+  type                         String                     @default("video")
+  notes                        String?
+  cancelledAt                  DateTime?
+  cancelledBy                  String?
+  createdAt                    DateTime                   @default(now())
+  updatedAt                    DateTime                   @updatedAt
+  patient                      Patient                    @relation(fields: [patientId], references: [id])
+  therapistAvailableTimeSlot   TherapistAvailableTimeSlot @relation(fields: [therapistAvailableTimeSlotId], references: [id])
+  therapist                    Therapist                  @relation(fields: [therapistId], references: [id])
+  appointmentOutcome           AppointmentOutcome?
 
   @@map("appointment")
 }
 
-// Therapist available timeslots, to configure the interactive calendar
-model TherapistAvailableTimeSlot{
-  id          String   @id @default(cuid())
+model TherapistAvailableTimeSlot {
+  id          String       @id @default(cuid())
   therapistId String
   startAt     DateTime
   endAt       DateTime
-  isBooked    Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  therapist   Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
-
+  isBooked    Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
   appointment Appointment?
+  therapist   Therapist    @relation(fields: [therapistId], references: [id], onDelete: Cascade)
 
   @@index([therapistId])
   @@index([startAt, endAt])
   @@map("therapist_available_timeslot")
 }
-
 
 /// Message
 model Message {
@@ -504,9 +372,8 @@ model Message {
   isRead         Boolean   @default(false)
   readAt         DateTime?
   createdAt      DateTime  @default(now())
-
-  patient   Patient?   @relation("PatientMessages", fields: [senderId], references: [id], map: "message_patient_fkey")
-  therapist Therapist? @relation("TherapistMessages", fields: [receiverId], references: [id], map: "message_therapist_fkey")
+  patient        Patient   @relation("PatientMessages", fields: [senderId], references: [id], map: "message_patient_fkey")
+  therapist      Therapist @relation("TherapistMessages", fields: [receiverId], references: [id], map: "message_therapist_fkey")
 
   @@index([conversationId])
   @@index([senderId])
@@ -532,27 +399,20 @@ model Notification {
 }
 
 model AppointmentOutcome {
-  id                 String   @id @default(cuid())
-  appointmentId      String   @unique
-  appointment        Appointment @relation(fields: [appointmentId], references: [id])
-
-  // === Clinical Report Section (Therapist Only) ===
+  id                 String      @id @default(cuid())
+  appointmentId      String      @unique
   sessionNotes       String?
   interventionsUsed  String[]
   progressAssessment String?
   riskAssessment     String?
-  isConfidential     Boolean  @default(true)
-
-  
-
-  // === Review Section (Patient Only - Optional) ===
-  rating             Int?     // Must be optional now, as patients might not leave a review
+  isConfidential     Boolean     @default(true)
+  rating             Int?
   comment            String?
-  isAnonymous        Boolean  @default(false)
-  isVisible          Boolean  @default(true)
-
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  isAnonymous        Boolean     @default(false)
+  isVisible          Boolean     @default(true)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  appointment        Appointment @relation(fields: [appointmentId], references: [id])
 
   @@map("appointment_outcome")
 }
@@ -574,4 +434,55 @@ model AuditLog {
   @@index([actorId])
   @@index([resourceType])
   @@map("audit_log")
+}
+
+/// Patient preference for therapist gender
+enum GenrePref {
+  FEMME
+  HOMME
+  PEU_IMPORTE
+}
+
+/// Patient sensitivity preference (cultural/religious awareness)
+enum SensibilitePatient {
+  OUI_IMPORTANT
+  NON_NECESSAIRE
+  NE_SAIS_PAS
+}
+
+/// Patient's past therapy experience
+enum ExperiencePassee {
+  OUI_POSITIVE
+  OUI_NON_SATISFAISANTE
+  NON_PREMIERE_FOIS
+  NE_SAIS_PAS
+}
+
+/// Patient's expectations for therapy style
+enum AttentesTherapie {
+  ECOUTE_ACTIVE
+  EXERCICES_OUTILS
+  COMPRENDRE_PASSE
+  NE_SAIS_PAS
+}
+
+/// Therapist's sensitivity/cultural approach
+enum SensibiliteTherapeute {
+  INTEGRE_DEMANDE
+  LAIQUE_NEUTRE
+  AUTRE
+}
+
+/// Therapist's therapeutic approach
+enum ApprocheTherapeute {
+  TCC
+  PSYCHANALYSE
+  HUMANISTE_GESTALT
+  INTEGRATIVE
+}
+
+enum UserRole {
+  PATIENT
+  THERAPIST
+  ADMIN
 }

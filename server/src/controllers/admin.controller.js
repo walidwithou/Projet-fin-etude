@@ -216,7 +216,6 @@ const verifyTherapist = async (req, res, next) => {
       where: { id },
       data: {
         verificationStatus: 'verified',
-        licenseVerified: true,
         updatedAt: new Date(),
       },
     });
@@ -268,7 +267,6 @@ const rejectTherapist = async (req, res, next) => {
       where: { id },
       data: {
         verificationStatus: 'rejected',
-        licenseVerified: false,
         updatedAt: new Date(),
       },
     });

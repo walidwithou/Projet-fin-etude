@@ -46,9 +46,6 @@ router.get('/patients', authorize(['therapist']), therapistController.getPatient
 // Get therapist's appointments
 router.get('/appointments', authorize(['therapist']), therapistController.getAppointments);
 
-// Get therapist's reviews
-router.get('/reviews', authorize(['therapist']), therapistController.getReviews);
-
 // Get therapist statistics/dashboard
 router.get('/stats', authorize(['therapist']), therapistController.getStats);
 

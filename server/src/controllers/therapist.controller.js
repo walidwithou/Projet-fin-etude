@@ -5,7 +5,7 @@ import { prisma } from '../db/prisma.js';
  */
 const getPublicTherapists = async (req, res, next) => {
   try {
-    const { specialization, language, page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 10 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const where = {
@@ -13,28 +13,22 @@ const getPublicTherapists = async (req, res, next) => {
       acceptingNewPatients: true,
     };
 
-    if (specialization) {
-      where.specializations = { has: specialization };
-    }
-    if (language) {
-      where.languages = { has: language };
-    }
-
     const [therapists, total] = await Promise.all([
       prisma.therapist.findMany({
         where,
-        select: {
-          id: true,
-          bio: true,
-          specializations: true,
-          yearsOfExperience: true,
-          education: true,
-          profilePhotoUrl: true,
-          hourlyRate: true,
-          currency: true,
-          languages: true,
-          rating: true,
-          totalReviews: true,
+        include: {
+          consultationModes: {
+            include: { consultationMode: true },
+          },
+          languages: {
+            include: { language: true },
+          },
+          pathologies: {
+            include: { pathology: true },
+          },
+          user: {
+            select: { name: true },
+          },
         },
         skip,
         take: parseInt(limit),
@@ -70,19 +64,19 @@ const getPublicTherapistProfile = async (req, res, next) => {
         id,
         verificationStatus: 'verified',
       },
-      select: {
-        id: true,
-        bio: true,
-        specializations: true,
-        yearsOfExperience: true,
-        education: true,
-        profilePhotoUrl: true,
-        hourlyRate: true,
-        currency: true,
-        availability: true,
-        languages: true,
-        rating: true,
-        totalReviews: true,
+      include: {
+        consultationModes: {
+          include: { consultationMode: true },
+        },
+        languages: {
+          include: { language: true },
+        },
+        pathologies: {
+          include: { pathology: true },
+        },
+        user: {
+          select: { name: true },
+        },
       },
     });
 
@@ -133,30 +127,20 @@ const getProfile = async (req, res, next) => {
 const updateProfile = async (req, res, next) => {
   try {
     const {
-      licenseNumber,
-      specializations,
-      yearsOfExperience,
-      education,
       bio,
       profilePhotoUrl,
       hourlyRate,
       currency,
-      languages,
       acceptingNewPatients,
     } = req.body;
 
     await prisma.therapist.updateMany({
       where: { userId: req.user.id },
       data: {
-        licenseNumber,
-        specializations,
-        yearsOfExperience,
-        education,
         bio,
         profilePhotoUrl,
         hourlyRate,
         currency,
-        languages,
         acceptingNewPatients,
         updatedAt: new Date(),
       },
@@ -223,7 +207,7 @@ const getPatients = async (req, res, next) => {
     }
 
     const patients = await prisma.patient.findMany({
-      where: { matchedTherapistId: therapist.id },
+      where: { currentTherapistid: therapist.id },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -282,39 +266,6 @@ const getAppointments = async (req, res, next) => {
 };
 
 /**
- * Get therapist's reviews
- */
-const getReviews = async (req, res, next) => {
-  try {
-    const therapist = await prisma.therapist.findFirst({
-      where: { userId: req.user.id },
-    });
-
-    if (!therapist) {
-      return res.status(404).json({
-        success: false,
-        message: 'Therapist profile not found',
-      });
-    }
-
-    const reviews = await prisma.review.findMany({
-      where: {
-        therapistId: therapist.id,
-        isVisible: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    res.json({
-      success: true,
-      data: reviews,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
  * Get therapist statistics/dashboard
  */
 const getStats = async (req, res, next) => {
@@ -339,9 +290,8 @@ const getStats = async (req, res, next) => {
       completedAppointments,
       upcomingAppointments,
       monthlyAppointments,
-      averageRating,
     ] = await Promise.all([
-      prisma.patient.count({ where: { matchedTherapistId: therapist.id } }),
+      prisma.patient.count({ where: { currentTherapistid: therapist.id } }),
       prisma.appointment.count({ where: { therapistId: therapist.id } }),
       prisma.appointment.count({ where: { therapistId: therapist.id, status: 'completed' } }),
       prisma.appointment.count({
@@ -357,10 +307,6 @@ const getStats = async (req, res, next) => {
           createdAt: { gte: thisMonth },
         },
       }),
-      prisma.review.aggregate({
-        where: { therapistId: therapist.id, isVisible: true },
-        _avg: { rating: true },
-      }),
     ]);
 
     res.json({
@@ -371,8 +317,8 @@ const getStats = async (req, res, next) => {
         completedAppointments,
         upcomingAppointments,
         monthlyAppointments,
-        averageRating: averageRating._avg.rating || 0,
         totalReviews: therapist.totalReviews,
+        rating: therapist.rating ? parseFloat(therapist.rating) : 0,
       },
     });
   } catch (error) {
@@ -456,7 +402,6 @@ const verifyTherapist = async (req, res, next) => {
       where: { id },
       data: {
         verificationStatus: 'verified',
-        licenseVerified: true,
         updatedAt: new Date(),
       },
     });
@@ -555,7 +500,6 @@ export {
   updateAvailability,
   getPatients,
   getAppointments,
-  getReviews,
   getStats,
   getAllTherapists,
   getTherapistById,

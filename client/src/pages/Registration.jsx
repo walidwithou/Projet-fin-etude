@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { 
   MapPin, 
@@ -24,7 +24,7 @@ import Results from '../components/Results';
 import TherapistProfile from '../components/TherapistProfile';
 
 import { WILAYAS_ALG, PATHOLOGIES, LANGUES, TEMPS_PREF } from '../constants';
-import { auth, setToken } from '../services/api';
+import { auth, setToken, apiCall } from '../services/api';
 
 const PATHOLOGY_CODES = [
   'stress_anxiete',
@@ -59,6 +59,12 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
   const [selectedTherapist, setSelectedTherapist] = useState(null);
   const [isRegistering, setIsRegistering] = useState(false);
   const [registrationError, setRegistrationError] = useState('');
+  const [matches, setMatches] = useState([]);
+  const [resultsLoading, setResultsLoading] = useState(false);
+  const [resultsError, setResultsError] = useState('');
+  const [confirmLoading, setConfirmLoading] = useState(false);
+  const [confirmError, setConfirmError] = useState('');
+  const [confirmSuccess, setConfirmSuccess] = useState(false);
   const [formData, setFormData] = useState({
     nom: '',
     prenom: '',
@@ -417,28 +423,66 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
     }
   };
 
-  const matches = useMemo(() => {
-    if (mode !== 'RESULTS' || role !== 'PATIENT') return [];
-    const therapists = [
-      { id: 1, name: "Dr. Amine B.", speciality: "TCC", languages: ["Français", "Arabe (Darja algérienne)"], wilaya: "16 - Alger", gender: "Homme", rating: 4.8 },
-      { id: 2, name: "Mme Sarah K.", speciality: "Psychanalyse", languages: ["Arabe (Darja algérienne)", "Arabe classique (Fusha)"], wilaya: "06 - Béjaïa", gender: "Femme", rating: 4.9 },
-      { id: 3, name: "Dr. Lynda M.", speciality: "Humaniste", languages: ["Tamazight", "Français"], wilaya: "15 - Tizi Ouzou", gender: "Femme", rating: 4.7 },
-      { id: 4, name: "Mr. Yacine T.", speciality: "TCC", languages: ["Arabe (Darja algérienne)", "Français"], wilaya: "31 - Oran", gender: "Homme", rating: 4.6 },
-    ];
-
-    return therapists.map(t => {
-      let score = 0;
-      const langMatch = t.languages.some(l => formData.langues.includes(l));
-      if (langMatch) score += 30;
-      if (t.wilaya === formData.wilaya) score += 20;
-      if (formData.sexPref === 'Peu importe' || 
-         (formData.sexPref === 'Une femme' && t.gender === 'Femme') || 
-         (formData.sexPref === 'Un homme' && t.gender === 'Homme')) {
-        score += 25;
+  /**
+   * Fetch matched therapists from the real backend API
+   * Called when the user clicks "Voir mes correspondances"
+   */
+  const handleFetchMatches = useCallback(async () => {
+    setResultsLoading(true);
+    setResultsError('');
+    
+    try {
+      const response = await apiCall('/patients/matched-therapists', {
+        method: 'GET',
+      });
+      
+      if (response.success && Array.isArray(response.data)) {
+        setMatches(response.data);
+      } else {
+        setMatches([]);
       }
-      return { ...t, score };
-    }).sort((a, b) => b.score - a.score);
-  }, [mode, role, formData]);
+    } catch (err) {
+      setResultsError(err.message || 'Erreur lors de la récupération des correspondances');
+      setMatches([]);
+    } finally {
+      setResultsLoading(false);
+    }
+  }, []);
+
+  /**
+   * Confirm therapist selection - calls backend API
+   * Uses currentTherapistId (the actual field name in the database)
+   */
+  const handleConfirmTherapist = useCallback(async (therapist) => {
+    setConfirmLoading(true);
+    setConfirmError('');
+    setConfirmSuccess(false);
+
+    try {
+      const response = await apiCall('/patients/select-therapist', {
+        method: 'POST',
+        body: JSON.stringify({ therapistId: therapist.id }),
+      });
+
+      if (response.success) {
+        setConfirmSuccess(true);
+        // After successful confirmation, navigate to patient panel
+        setTimeout(() => {
+          onNavigateToPage('PATIENT', { 
+            therapist: {
+              ...therapist,
+              name: therapist.name,
+              speciality: therapist.approcheTherapeute,
+            }
+          });
+        }, 1000);
+      }
+    } catch (err) {
+      setConfirmError(err.message || 'Erreur lors de la confirmation');
+    } finally {
+      setConfirmLoading(false);
+    }
+  }, [onNavigateToPage]);
 
   return (
     <div className="min-h-screen bg-bg-main text-text-main font-sans selection:bg-primary-light">
@@ -485,7 +529,10 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
             <Success 
               role={role}
               userName={formData.prenom}
-              onNext={() => setMode('RESULTS')}
+              onNext={() => {
+                setMode('RESULTS');
+                handleFetchMatches();
+              }}
               onHome={() => { setMode('LANDING'); setRole(null); }}
             />
           )}
@@ -494,6 +541,8 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
             <Results 
               role={role}
               matches={matches}
+              loading={resultsLoading}
+              error={resultsError}
               onHome={() => { setMode('LANDING'); setRole(null); }}
               onSelectTherapist={(therapist) => {
                 setSelectedTherapist(therapist);
@@ -506,9 +555,10 @@ export default function Registration({ onNavigateToLogin, onNavigateToPage, init
             <TherapistProfile 
               therapist={selectedTherapist}
               onBack={() => setMode('RESULTS')}
-              onConfirm={(therapist) => {
-                onNavigateToPage('PATIENT', { therapist });
-              }}
+              onConfirm={handleConfirmTherapist}
+              confirmLoading={confirmLoading}
+              confirmError={confirmError}
+              confirmSuccess={confirmSuccess}
             />
           )}
         </AnimatePresence>
