@@ -4,7 +4,7 @@ import crypto from 'crypto';
 const generateId = () => crypto.randomUUID();
 
 /**
- * Get therapist reviews (public)
+ * Get therapist reviews (public) - uses AppointmentOutcome model
  */
 const getTherapistReviews = async (req, res, next) => {
   try {
@@ -13,27 +13,46 @@ const getTherapistReviews = async (req, res, next) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const [reviews, total] = await Promise.all([
-      prisma.review.findMany({
+      prisma.appointmentOutcome.findMany({
         where: {
-          therapistId,
           isVisible: true,
+          rating: { not: null },
+          appointment: {
+            therapistId,
+          },
+        },
+        include: {
+          appointment: {
+            select: {
+              patientId: true,
+            },
+          },
         },
         skip,
         take: parseInt(limit),
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.review.count({
+      prisma.appointmentOutcome.count({
         where: {
-          therapistId,
           isVisible: true,
+          rating: { not: null },
+          appointment: {
+            therapistId,
+          },
         },
       }),
     ]);
 
     // Hide patient info for anonymous reviews
     const sanitizedReviews = reviews.map((review) => ({
-      ...review,
-      patientId: review.isAnonymous ? null : review.patientId,
+      id: review.id,
+      rating: review.rating,
+      comment: review.comment,
+      isAnonymous: review.isAnonymous,
+      isVisible: review.isVisible,
+      createdAt: review.createdAt,
+      updatedAt: review.updatedAt,
+      patientId: review.isAnonymous ? null : review.appointment?.patientId,
     }));
 
     res.json({
@@ -52,7 +71,7 @@ const getTherapistReviews = async (req, res, next) => {
 };
 
 /**
- * Create a review
+ * Create a review (as AppointmentOutcome rating)
  */
 const create = async (req, res, next) => {
   try {
@@ -100,40 +119,74 @@ const create = async (req, res, next) => {
       });
     }
 
-    // Check if patient already reviewed this therapist
-    const existingReview = await prisma.review.findFirst({
+    // Check if patient already reviewed this therapist via AppointmentOutcome
+    const existingReview = await prisma.appointmentOutcome.findFirst({
       where: {
-        patientId: patient.id,
-        therapistId,
+        rating: { not: null },
+        appointment: {
+          patientId: patient.id,
+          therapistId,
+        },
       },
     });
 
-    if (existingReview) {
+    if (existingReview && appointmentId !== existingReview.appointmentId) {
       return res.status(400).json({
         success: false,
         message: 'You have already reviewed this therapist',
       });
     }
 
-    const review = await prisma.review.create({
-      data: {
-        id: generateId(),
-        patientId: patient.id,
-        therapistId,
-        appointmentId,
-        rating,
-        comment,
-        isAnonymous: isAnonymous || false,
-      },
-    });
+    // Find or create the AppointmentOutcome
+    let outcome;
+    if (appointmentId) {
+      outcome = await prisma.appointmentOutcome.upsert({
+        where: { appointmentId },
+        update: {
+          rating,
+          comment: comment || undefined,
+          isAnonymous: isAnonymous || false,
+        },
+        create: {
+          appointmentId,
+          rating,
+          comment: comment || null,
+          isAnonymous: isAnonymous || false,
+        },
+      });
+    } else {
+      // If no appointmentId, use the completed appointment
+      outcome = await prisma.appointmentOutcome.upsert({
+        where: { appointmentId: hasAppointment.id },
+        update: {
+          rating,
+          comment: comment || undefined,
+          isAnonymous: isAnonymous || false,
+        },
+        create: {
+          appointmentId: hasAppointment.id,
+          rating,
+          comment: comment || null,
+          isAnonymous: isAnonymous || false,
+        },
+      });
+    }
 
     // Update therapist rating
-    const reviews = await prisma.review.findMany({
-      where: { therapistId, isVisible: true },
+    const reviews = await prisma.appointmentOutcome.findMany({
+      where: {
+        isVisible: true,
+        rating: { not: null },
+        appointment: {
+          therapistId,
+        },
+      },
       select: { rating: true },
     });
 
-    const averageRating = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
+    const averageRating = reviews.length > 0
+      ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length
+      : rating;
 
     await prisma.therapist.update({
       where: { id: therapistId },
@@ -146,7 +199,7 @@ const create = async (req, res, next) => {
 
     res.status(201).json({
       success: true,
-      data: review,
+      data: outcome,
     });
   } catch (error) {
     next(error);
@@ -173,23 +226,28 @@ const update = async (req, res, next) => {
       });
     }
 
-    const review = await prisma.review.findUnique({ where: { id } });
+    const outcome = await prisma.appointmentOutcome.findUnique({
+      where: { id },
+      include: {
+        appointment: true,
+      },
+    });
 
-    if (!review) {
+    if (!outcome) {
       return res.status(404).json({
         success: false,
         message: 'Review not found',
       });
     }
 
-    if (review.patientId !== patient.id) {
+    if (outcome.appointment.patientId !== patient.id) {
       return res.status(403).json({
         success: false,
         message: 'Access denied',
       });
     }
 
-    const updated = await prisma.review.update({
+    const updated = await prisma.appointmentOutcome.update({
       where: { id },
       data: {
         rating: rating !== undefined ? rating : undefined,
@@ -201,15 +259,23 @@ const update = async (req, res, next) => {
 
     // Update therapist rating if rating changed
     if (rating !== undefined) {
-      const reviews = await prisma.review.findMany({
-        where: { therapistId: review.therapistId, isVisible: true },
+      const reviews = await prisma.appointmentOutcome.findMany({
+        where: {
+          isVisible: true,
+          rating: { not: null },
+          appointment: {
+            therapistId: outcome.appointment.therapistId,
+          },
+        },
         select: { rating: true },
       });
 
-      const averageRating = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
+      const averageRating = reviews.length > 0
+        ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length
+        : null;
 
       await prisma.therapist.update({
-        where: { id: review.therapistId },
+        where: { id: outcome.appointment.therapistId },
         data: { rating: averageRating, updatedAt: new Date() },
       });
     }
@@ -242,27 +308,48 @@ const deleteReview = async (req, res, next) => {
       });
     }
 
-    const review = await prisma.review.findUnique({ where: { id } });
+    const outcome = await prisma.appointmentOutcome.findUnique({
+      where: { id },
+      include: {
+        appointment: true,
+      },
+    });
 
-    if (!review) {
+    if (!outcome) {
       return res.status(404).json({
         success: false,
         message: 'Review not found',
       });
     }
 
-    if (review.patientId !== patient.id) {
+    if (outcome.appointment.patientId !== patient.id) {
       return res.status(403).json({
         success: false,
         message: 'Access denied',
       });
     }
 
-    await prisma.review.delete({ where: { id } });
+    // Clear rating fields instead of deleting the whole outcome
+    await prisma.appointmentOutcome.update({
+      where: { id },
+      data: {
+        rating: null,
+        comment: null,
+        isAnonymous: true,
+        isVisible: false,
+        updatedAt: new Date(),
+      },
+    });
 
     // Update therapist rating
-    const reviews = await prisma.review.findMany({
-      where: { therapistId: review.therapistId, isVisible: true },
+    const reviews = await prisma.appointmentOutcome.findMany({
+      where: {
+        isVisible: true,
+        rating: { not: null },
+        appointment: {
+          therapistId: outcome.appointment.therapistId,
+        },
+      },
       select: { rating: true },
     });
 
@@ -271,7 +358,7 @@ const deleteReview = async (req, res, next) => {
       : null;
 
     await prisma.therapist.update({
-      where: { id: review.therapistId },
+      where: { id: outcome.appointment.therapistId },
       data: {
         rating: averageRating,
         totalReviews: reviews.length,
@@ -297,16 +384,31 @@ const getAll = async (req, res, next) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const [reviews, total] = await Promise.all([
-      prisma.review.findMany({
+      prisma.appointmentOutcome.findMany({
+        where: {
+          rating: { not: null },
+        },
         skip,
         take: parseInt(limit),
         include: {
-          patient: true,
-          therapist: true,
+          appointment: {
+            include: {
+              patient: true,
+              therapist: {
+                include: {
+                  user: { select: { name: true } },
+                },
+              },
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.review.count(),
+      prisma.appointmentOutcome.count({
+        where: {
+          rating: { not: null },
+        },
+      }),
     ]);
 
     res.json({
@@ -332,26 +434,37 @@ const toggleVisibility = async (req, res, next) => {
     const { id } = req.params;
     const { isVisible } = req.body;
 
-    const review = await prisma.review.findUnique({ where: { id } });
+    const outcome = await prisma.appointmentOutcome.findUnique({
+      where: { id },
+      include: {
+        appointment: true,
+      },
+    });
 
-    if (!review) {
+    if (!outcome) {
       return res.status(404).json({
         success: false,
         message: 'Review not found',
       });
     }
 
-    const updated = await prisma.review.update({
+    const updated = await prisma.appointmentOutcome.update({
       where: { id },
       data: {
-        isVisible: isVisible !== undefined ? isVisible : !review.isVisible,
+        isVisible: isVisible !== undefined ? isVisible : !outcome.isVisible,
         updatedAt: new Date(),
       },
     });
 
     // Update therapist rating
-    const reviews = await prisma.review.findMany({
-      where: { therapistId: review.therapistId, isVisible: true },
+    const reviews = await prisma.appointmentOutcome.findMany({
+      where: {
+        isVisible: true,
+        rating: { not: null },
+        appointment: {
+          therapistId: outcome.appointment.therapistId,
+        },
+      },
       select: { rating: true },
     });
 
@@ -360,7 +473,7 @@ const toggleVisibility = async (req, res, next) => {
       : null;
 
     await prisma.therapist.update({
-      where: { id: review.therapistId },
+      where: { id: outcome.appointment.therapistId },
       data: {
         rating: averageRating,
         totalReviews: reviews.length,
@@ -375,9 +488,9 @@ const toggleVisibility = async (req, res, next) => {
         actorId: req.user.id,
         actorRole: 'admin',
         action: 'review.visibility_changed',
-        resourceType: 'review',
+        resourceType: 'appointment_outcome',
         resourceId: id,
-        previousValue: { isVisible: review.isVisible },
+        previousValue: { isVisible: outcome.isVisible },
         newValue: { isVisible: updated.isVisible },
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],

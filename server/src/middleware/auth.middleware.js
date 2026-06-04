@@ -53,23 +53,67 @@ const extractToken = (req) => {
  * and force a re-login.
  */
 export const authenticate = async (req, res, next) => {
+  // -- TRACE: helps confirm the Authorization header actually reaches
+  //    the server on the patient matching flow. Safe to remove once
+  //    the bug is fully diagnosed in production.
+  // eslint-disable-next-line no-console
+  console.log('[auth][start]', {
+    url: req.originalUrl,
+    method: req.method,
+    hasAuthHeader: Boolean(req.headers && req.headers.authorization),
+    headerPrefix:
+      typeof req.headers?.authorization === 'string'
+        ? req.headers.authorization.slice(0, 12)
+        : null,
+    hasCookie: Boolean(req.cookies && req.cookies.token),
+  });
+
   try {
     const token = extractToken(req);
     if (!token) {
+      // eslint-disable-next-line no-console
+      console.warn('[auth] no token provided', { url: req.originalUrl });
       return res.status(401).json({
         success: false,
         message: 'No token provided',
       });
     }
 
-    const session = await prisma.session.findUnique({
-      where: { token },
-      include: {
-        user: { include: FULL_USER_INCLUDE },
-      },
+    // eslint-disable-next-line no-console
+    console.log('[auth] looking up session', {
+      tokenLength: token.length,
+      tokenPrefix: `${token.slice(0, 8)}…`,
     });
 
+    let session;
+    try {
+      session = await prisma.session.findUnique({
+        where: { token },
+        include: {
+          user: { include: FULL_USER_INCLUDE },
+        },
+      });
+    } catch (lookupError) {
+      // P2025 = "Record not found". The token is well-formed but no
+      // matching Session row exists — this is a regular 401, not a
+      // server-side failure. Forwarding it as 500 would surface a
+      // scary "Authentication failed" message to the patient.
+      if (lookupError && lookupError.code === 'P2025') {
+        // eslint-disable-next-line no-console
+        console.warn('[auth] session not found (P2025)', {
+          url: req.originalUrl,
+        });
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid or expired token',
+        });
+      }
+      throw lookupError;
+    }
+
     if (!session) {
+      // eslint-disable-next-line no-console
+      console.warn('[auth] session null', { url: req.originalUrl });
       return res.status(401).json({
         success: false,
         message: 'Invalid or expired token',
@@ -81,6 +125,11 @@ export const authenticate = async (req, res, next) => {
       prisma.session
         .delete({ where: { token } })
         .catch(() => {});
+      // eslint-disable-next-line no-console
+      console.warn('[auth] session expired', {
+        url: req.originalUrl,
+        expiresAt: session.expiresAt,
+      });
       return res.status(401).json({
         success: false,
         message: 'Session expired',
@@ -102,7 +151,18 @@ export const authenticate = async (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error('Authentication error:', error);
+    // Always log the full error so the 500 "Authentication failed"
+    // message is no longer a black box. We deliberately log *before*
+    // building the response so the original cause is captured.
+    // eslint-disable-next-line no-console
+    console.error('Authentication error:', {
+      message: error?.message,
+      code: error?.code,
+      name: error?.name,
+      stack: error?.stack ? error.stack.split('\n').slice(0, 4).join('\n') : null,
+      url: req.originalUrl,
+      method: req.method,
+    });
     return res.status(500).json({
       success: false,
       message: 'Authentication failed',

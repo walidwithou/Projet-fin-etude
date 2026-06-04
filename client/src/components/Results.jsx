@@ -1,7 +1,7 @@
 import { motion } from 'motion/react';
-import { UserCheck, Users, Target, ArrowLeft, Shield } from 'lucide-react';
+import { UserCheck, Target, ArrowLeft, Shield, Star, MapPin, Globe, Award } from 'lucide-react';
 
-export default function Results({ role, matches, onHome, onSelectTherapist }) {
+export default function Results({ role, matches, onHome, onSelectTherapist, loading, error }) {
   return (
     <motion.div 
       key="results"
@@ -23,49 +23,93 @@ export default function Results({ role, matches, onHome, onSelectTherapist }) {
         </p>
       </div>
 
-      {role === 'PATIENT' && (
-        <div className="grid gap-6">
-          {matches.map((therapist, i) => (
-            <motion.div 
-              key={therapist.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.1 }}
-              className="bg-card-bg rounded-3xl p-6 border border-border-color flex flex-col md:flex-row gap-6 items-center shadow-lg hover:shadow-xl transition-all"
-            >
-              <div className="w-24 h-24 bg-primary-light rounded-2xl flex items-center justify-center text-primary">
-                <Users className="w-10 h-10" />
-              </div>
-              <div className="flex-1 text-center md:text-left">
-                <div className="flex flex-wrap items-center gap-2 mb-1 justify-center md:justify-start">
-                  <h3 className="text-xl font-bold text-text-main">{therapist.name}</h3>
-                  <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs font-bold rounded-lg uppercase tracking-wide">Vérifié</span>
-                </div>
-                <p className="text-text-muted font-medium mb-3">{therapist.speciality} • {therapist.wilaya}</p>
-                <div className="flex flex-wrap gap-2 justify-center md:justify-start">
-                  {therapist.languages.map(l => (
-                    <span key={l} className="text-xs font-semibold px-3 py-1 bg-bg-main border border-border-color rounded-full text-text-muted">{l}</span>
-                  ))}
-                </div>
-              </div>
-              <div className="flex flex-col items-center md:items-end gap-3 min-w-[140px]">
-                <div className="flex items-center gap-1 text-primary">
-                  <Target className="w-4 h-4 fill-current" />
-                  <span className="font-bold">{therapist.score}% Match</span>
-                </div>
-                <button 
-                  onClick={() => onSelectTherapist(therapist)}
-                  className="w-full px-6 py-3 bg-primary text-white rounded-xl font-bold shadow-lg hover:scale-[1.02] transition-transform"
-                >
-                  Consulter
-                </button>
-              </div>
-            </motion.div>
-          ))}
+      {loading && (
+        <div className="text-center py-12">
+          <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-text-muted font-medium">Recherche des meilleures correspondances...</p>
         </div>
       )}
 
-      {role === 'THERAPEUTE' && (
+      {error && (
+        <div className="p-6 bg-red-500/10 border border-red-500/30 rounded-2xl text-center">
+          <p className="text-red-600 font-bold">{error}</p>
+        </div>
+      )}
+
+      {role === 'PATIENT' && !loading && !error && (
+        <div className="grid gap-6">
+          {matches.length === 0 ? (
+            <div className="p-12 bg-card-bg rounded-3xl border border-border-color text-center">
+              <Shield className="w-16 h-16 text-text-muted/30 mx-auto mb-4" />
+              <h3 className="text-xl font-bold text-text-main mb-2">Aucun thérapeute trouvé</h3>
+              <p className="text-text-muted">Aucun thérapeute ne correspond à vos critères pour le moment. Réessayez plus tard.</p>
+            </div>
+          ) : (
+            matches.map((therapist, i) => (
+              <motion.div 
+                key={therapist.id || therapist.userId || i}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.1 }}
+                className="bg-card-bg rounded-3xl p-6 border border-border-color flex flex-col md:flex-row gap-6 items-center shadow-lg hover:shadow-xl transition-all"
+              >
+                <div className="w-24 h-24 bg-primary-light rounded-2xl flex items-center justify-center text-primary text-3xl font-black shadow-inner border-2 border-card-bg">
+                  {therapist.name ? therapist.name.charAt(0).toUpperCase() : 'T'}
+                </div>
+                <div className="flex-1 text-center md:text-left">
+                  <div className="flex flex-wrap items-center gap-2 mb-1 justify-center md:justify-start">
+                    <h3 className="text-xl font-bold text-text-main">{therapist.name || 'Thérapeute'}</h3>
+                    <span className="px-2 py-0.5 bg-green-500/10 text-green-600 text-xs font-bold rounded-lg uppercase tracking-wide flex items-center gap-1">
+                      <Award className="w-3 h-3" /> Vérifié
+                    </span>
+                  </div>
+                  <p className="text-text-muted font-medium mb-3 flex items-center gap-1 justify-center md:justify-start">
+                    {therapist.approcheTherapeute ? (
+                      <>
+                        <Star className="w-3 h-3 text-primary" />
+                        {therapist.approcheTherapeute === 'TCC' && 'Thérapie Cognitivo-Comportementale (TCC)'}
+                        {therapist.approcheTherapeute === 'PSYCHANALYSE' && 'Psychanalyse'}
+                        {therapist.approcheTherapeute === 'HUMANISTE_GESTALT' && 'Humaniste / Gestalt'}
+                        {therapist.approcheTherapeute === 'INTEGRATIVE' && 'Approche Intégrative'}
+                      </>
+                    ) : ''}
+                  </p>
+                  {therapist.rating && (
+                    <div className="flex items-center gap-1 justify-center md:justify-start mb-2">
+                      {[...Array(5)].map((_, i) => (
+                        <Star key={i} className={`w-3 h-3 ${i < Math.floor(therapist.rating) ? 'text-yellow-500 fill-yellow-500' : 'text-text-muted/30'}`} />
+                      ))}
+                      <span className="text-xs font-bold text-text-muted ml-1">({therapist.rating})</span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col items-center md:items-end gap-3 min-w-[140px]">
+                  <div className="flex items-center gap-1.5 text-primary">
+                    <Target className="w-4 h-4" />
+                    <span className="font-bold text-lg">{therapist.compatibility || therapist.matchScore || 0}%</span>
+                    <span className="text-[10px] text-text-muted font-medium">Match</span>
+                  </div>
+                  {therapist.matchReasons && therapist.matchReasons.length > 0 && (
+                    <div className="hidden md:flex flex-wrap gap-1 justify-end max-w-[200px]">
+                      {therapist.matchReasons.slice(0, 2).map((reason, idx) => (
+                        <span key={idx} className="text-[9px] px-2 py-0.5 bg-primary/5 rounded-full text-primary font-medium">{reason}</span>
+                      ))}
+                    </div>
+                  )}
+                  <button 
+                    onClick={() => onSelectTherapist(therapist)}
+                    className="w-full px-6 py-3 bg-primary text-white rounded-xl font-bold shadow-lg hover:scale-[1.02] transition-transform hover:shadow-xl"
+                  >
+                    Consulter
+                  </button>
+                </div>
+              </motion.div>
+            ))
+          )}
+        </div>
+      )}
+
+      {role === 'THERAPEUT' && (
         <div className="bg-primary/5 border-2 border-dashed border-primary/30 rounded-3xl p-12 text-center">
           <Shield className="w-16 h-16 text-primary/40 mx-auto mb-6" />
           <h3 className="text-xl font-bold text-primary-dark mb-2">Étape suivante : Validation du diplôme</h3>

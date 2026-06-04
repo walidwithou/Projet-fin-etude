@@ -4,7 +4,17 @@ import { authenticate, authorize } from '../middleware/auth.middleware.js';
 
 const router = Router();
 
-// All routes require authentication
+// ---------------------------------------------------------------------------
+// Authentication is enforced for EVERY route mounted below via
+// `router.use(authenticate)`. Each individual route additionally gates
+// access to the right role(s) with `authorize([...])`.
+//
+// IMPORTANT: do NOT swap the order. `authenticate` must run first so
+// that `req.user`, `req.role`, and `req.profile` are populated before
+// the role gate checks `req.role`. Reordering these middlewares
+// (e.g. listing `authorize` before `authenticate` on a new route)
+// is the most common source of "Authentication failed" regressions.
+// ---------------------------------------------------------------------------
 router.use(authenticate);
 
 // Get patient profile
@@ -17,7 +27,16 @@ router.put('/profile', authorize(['patient']), patientController.updateProfile);
 router.post('/questionnaire', authorize(['patient']), patientController.submitQuestionnaire);
 
 // Get matched therapists based on questionnaire
-router.get('/matched-therapists', authorize(['patient']), patientController.getMatchedTherapists);
+// NOTE: relies on `authenticate` (via router.use above) populating
+// `req.user.id` and `req.role === 'patient'`. If the front-end ever
+// starts calling this endpoint as a therapist or admin, the role
+// gate below will reject it with a 403 "Insufficient permissions"
+// rather than the generic 500 "Authentication failed".
+router.get(
+  '/matched-therapists',
+  authorize(['patient']),
+  patientController.getMatchedTherapists,
+);
 
 // Select a therapist
 router.post('/select-therapist', authorize(['patient']), patientController.selectTherapist);

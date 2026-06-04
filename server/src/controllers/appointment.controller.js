@@ -114,7 +114,7 @@ const getById = async (req, res, next) => {
       include: {
         therapist: true,
         patient: true,
-        sessionReport: true,
+        appointmentOutcome: true,
       },
     });
 
@@ -157,7 +157,7 @@ const updateStatus = async (req, res, next) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    const validStatuses = ['confirmed', 'in_progress', 'completed', 'no_show'];
+    const validStatuses = ['confirmed', 'in_progress', 'completed', 'no_show', 'cancelled'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -249,7 +249,7 @@ const cancel = async (req, res, next) => {
         status: 'cancelled',
         cancelledAt: new Date(),
         cancelledBy: req.user.id,
-        cancellationReason: reason,
+        notes: reason || appointment.notes,
         updatedAt: new Date(),
       },
     });
@@ -368,11 +368,13 @@ const getAvailableSlots = async (req, res, next) => {
     // Get therapist's availability
     const availability = therapist.availability || {};
     const requestedDate = date ? new Date(date) : new Date();
-    const dayOfWeek = requestedDate.toLocaleDateString('en-US', { weekday: 'lowercase' });
+    const dayOfWeek = requestedDate.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
 
     // Get booked appointments for the date
-    const startOfDay = new Date(requestedDate.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(requestedDate.setHours(23, 59, 59, 999));
+    const startOfDay = new Date(requestedDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(requestedDate);
+    endOfDay.setHours(23, 59, 59, 999);
 
     const bookedAppointments = await prisma.appointment.findMany({
       where: {
@@ -428,21 +430,20 @@ const getAvailableSlots = async (req, res, next) => {
 };
 
 /**
- * Create session report for an appointment
+ * Create appointment outcome (session report) for an appointment
+ * Uses the AppointmentOutcome model (the actual model name in the database)
  */
 const createSessionReport = async (req, res, next) => {
   try {
     const { id } = req.params;
     const {
-      presentingIssues,
       sessionNotes,
       interventionsUsed,
       progressAssessment,
-      moodRating,
-      homeworkAssigned,
-      nextSessionGoals,
       riskAssessment,
       isConfidential,
+      rating,
+      comment,
     } = req.body;
 
     const appointment = await prisma.appointment.findUnique({
@@ -465,34 +466,28 @@ const createSessionReport = async (req, res, next) => {
       });
     }
 
-    // Check if report already exists
-    const existingReport = await prisma.sessionReport.findUnique({
+    // Check if outcome already exists
+    const existingOutcome = await prisma.appointmentOutcome.findUnique({
       where: { appointmentId: id },
     });
 
-    if (existingReport) {
+    if (existingOutcome) {
       return res.status(400).json({
         success: false,
         message: 'Session report already exists for this appointment',
       });
     }
 
-    const report = await prisma.sessionReport.create({
+    const outcome = await prisma.appointmentOutcome.create({
       data: {
-        id: generateId(),
         appointmentId: id,
-        therapistId: appointment.therapistId,
-        patientId: appointment.patientId,
-        sessionDate: appointment.scheduledAt,
-        presentingIssues,
         sessionNotes,
         interventionsUsed: interventionsUsed || [],
         progressAssessment,
-        moodRating,
-        homeworkAssigned,
-        nextSessionGoals,
         riskAssessment,
         isConfidential: isConfidential !== false,
+        rating: rating || null,
+        comment: comment || null,
       },
     });
 
@@ -504,7 +499,7 @@ const createSessionReport = async (req, res, next) => {
 
     res.status(201).json({
       success: true,
-      data: report,
+      data: outcome,
     });
   } catch (error) {
     next(error);
@@ -512,22 +507,30 @@ const createSessionReport = async (req, res, next) => {
 };
 
 /**
- * Get session report for an appointment
+ * Get appointment outcome (session report) for an appointment
+ * Uses the AppointmentOutcome model
  */
 const getSessionReport = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const report = await prisma.sessionReport.findUnique({
+    const outcome = await prisma.appointmentOutcome.findUnique({
       where: { appointmentId: id },
       include: {
-        appointment: true,
-        therapist: true,
-        patient: true,
+        appointment: {
+          include: {
+            therapist: {
+              include: {
+                user: { select: { name: true } },
+              },
+            },
+            patient: true,
+          },
+        },
       },
     });
 
-    if (!report) {
+    if (!outcome) {
       return res.status(404).json({
         success: false,
         message: 'Session report not found',
@@ -535,7 +538,14 @@ const getSessionReport = async (req, res, next) => {
     }
 
     // Verify access
-    if (req.user.role === 'therapist' && report.therapist.userId !== req.user.id) {
+    if (req.user.role === 'patient' && outcome.appointment.patient.userId !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied',
+      });
+    }
+
+    if (req.user.role === 'therapist' && outcome.appointment.therapist.userId !== req.user.id) {
       return res.status(403).json({
         success: false,
         message: 'Access denied',
@@ -544,7 +554,7 @@ const getSessionReport = async (req, res, next) => {
 
     res.json({
       success: true,
-      data: report,
+      data: outcome,
     });
   } catch (error) {
     next(error);

@@ -1136,8 +1136,6 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
           </>
         )}
       </AnimatePresence>
-
-      <Footer onNavigate={onNavigateToPage} />
     </div>
   );
 }

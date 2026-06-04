@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Registration from './pages/Registration';
 import Login from './pages/Login';
 import About from './pages/About';
@@ -8,7 +8,7 @@ import Settings from './pages/Settings';
 import Panel from './pages/Panel';
 import AccessDenied from './pages/AccessDenied';
 import { useAuth } from './auth/AuthContext';
-import { canAccess, defaultPageForUser } from './auth/canAccess';
+import { canAccess, defaultPageForUser, isPrivatePage } from './auth/canAccess';
 import ProtectedRoute from './auth/ProtectedRoute';
 
 /**
@@ -47,9 +47,13 @@ function AppContent() {
 
   const { user, isAuthenticated, loading } = useAuth();
 
-  // Temporary debug log — helps confirm the auth state on every render
-  // when investigating the unexpected redirect to /therapist on the
-  // root URL.
+  // ---------------------------------------------------------------
+  // LIFECYCLE LOGS — capture the exact sequence of events that
+  // lead to (or prevent) a redirect on the root URL.
+  // ---------------------------------------------------------------
+  // 1) Initial render: which page is requested and what is the
+  //    auth state at the very first render? This is the "flash"
+  //    that is visible to the user.
   // eslint-disable-next-line no-console
   console.log('[App][render]', {
     currentPage,
@@ -58,6 +62,25 @@ function AppContent() {
     userRole: user?.role,
     hasUser: Boolean(user),
   });
+
+  // ---------------------------------------------------------------
+  // 2) End of auth check: fires exactly once when `loading`
+  //    transitions from true to false. Lets us know whether the
+  //    hydrate call succeeded or was skipped (no token).
+  // ---------------------------------------------------------------
+  const wasLoadingRef = useRef(loading);
+  useEffect(() => {
+    if (wasLoadingRef.current && !loading) {
+      // eslint-disable-next-line no-console
+      console.log('[App][auth-check-finished]', {
+        isAuthenticated,
+        userRole: user?.role,
+        hasUser: Boolean(user),
+        currentPage,
+      });
+    }
+    wasLoadingRef.current = loading;
+  }, [loading, isAuthenticated, user, currentPage]);
 
   // Dark Mode global initialization
   useEffect(() => {
@@ -83,41 +106,62 @@ function AppContent() {
     }
   }, []);
 
-  // If a user is already authenticated (e.g. they refreshed the page
-  // and we hydrated their session from the JWT in localStorage),
-  // and the current page is the default landing page (REGISTRATION),
-  // jump them straight to their default page. This means the URL
-  // can never display REGISTRATION to a logged-in user.
+  // ---------------------------------------------------------------
+  // Redirect-on-mount logic.
   //
-  // SECURITY: we only redirect to a private page when we are SURE the
-  // user is authenticated AND the user object is present AND its role
-  // is one of the known roles. A null/undefined user (or a user with
-  // an unrecognized role) must keep the public page on screen.
+  // SECURITY — we apply the following strict guards, in order:
+  //   G1. `loading` must be false (hydrate has finished)
+  //   G2. `isAuthenticated` must be true (token + user both set)
+  //   G3. `user` must be a non-null object with a known role
+  //   G4. The current page must be the public landing page
+  //   G5. The computed target must be a known private route
+  //      (we use the isPrivatePage helper from canAccess.js as the
+  //       single source of truth)
+  //
+  // If any guard fails we DO NOT touch currentPage: the user
+  // keeps the page they were viewing (REGISTRATION on the root).
+  // ---------------------------------------------------------------
   useEffect(() => {
-    if (loading) return;
-    if (!isAuthenticated) {
-      // Not authenticated: keep the page the user asked for (root
-      // = REGISTRATION = landing). We never force-redirect an
-      // anonymous visitor into a private dashboard.
-      return;
-    }
-    if (!user) {
-      // Defensive: isAuthenticated says true but the user object is
-      // missing (race condition during hydrate). Treat as logged out.
+    // G1 — wait for hydration
+    if (loading) {
       // eslint-disable-next-line no-console
-      console.warn('[App][redirect] isAuthenticated=true but user is null, ignoring');
+      console.log('[App][redirect] skipped: still loading');
       return;
     }
+    // G2 — require an authenticated session
+    if (!isAuthenticated) {
+      // eslint-disable-next-line no-console
+      console.log('[App][redirect] skipped: not authenticated, keeping public page');
+      return;
+    }
+    // G3 — require a usable user object with a known role
+    if (!user || typeof user !== 'object' || typeof user.role !== 'string') {
+      // eslint-disable-next-line no-console
+      console.warn('[App][redirect] skipped: isAuthenticated=true but user is invalid', {
+        user,
+      });
+      return;
+    }
+    // G4 — only redirect when we are on the public landing page
     if (currentPage !== 'REGISTRATION') {
-      // The user navigated to a specific page; do not override it.
+      // eslint-disable-next-line no-console
+      console.log('[App][redirect] skipped: current page is not REGISTRATION', {
+        currentPage,
+      });
       return;
     }
     const target = defaultPageForUser(user);
-    // eslint-disable-next-line no-console
-    console.log('[App][redirect]', { from: currentPage, to: target });
-    if (target && target !== 'REGISTRATION') {
-      setCurrentPage(target);
+    // G5 — only redirect to a known private page (single source
+    // of truth lives in canAccess.js). ACCESS_DENIED is also a
+    // legitimate private target (e.g. unverified therapist).
+    if (!isPrivatePage(target) && target !== 'ACCESS_DENIED') {
+      // eslint-disable-next-line no-console
+      console.log('[App][redirect] skipped: target is not a private page', { target });
+      return;
     }
+    // eslint-disable-next-line no-console
+    console.log('[App][redirect] navigation déclenchée', { from: currentPage, to: target });
+    setCurrentPage(target);
   }, [loading, isAuthenticated, currentPage, user]);
 
   const handleNavigate = (page, data = {}) => {

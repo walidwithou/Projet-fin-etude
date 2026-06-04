@@ -360,6 +360,19 @@ const register = async (req, res, next) => {
       },
     });
 
+    // -- TRACE: confirms the freshly-issued session is in the database
+    //    before we hand the token back to the client. Helps correlate
+    //    a "Authentication failed" on the very next /auth/me or
+    //    /patients/matched-therapists call with the actual insert.
+    // eslint-disable-next-line no-console
+    console.log('[register] session created', {
+      userId: user.id,
+      role,
+      tokenPrefix: `${sessionRow.token.slice(0, 8)}\u2026`,
+      tokenLength: sessionRow.token.length,
+      expiresAt: sessionRow.expiresAt,
+    });
+
     // 5. Reload the user with the role-relevant profile, then compose the
     //    standardized payload.
     const fullUser = await loadUserWithProfile(user.id);
@@ -455,6 +468,18 @@ const login = async (req, res, next) => {
         ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
         userAgent: req.headers['user-agent'] || null,
       },
+    });
+
+    // -- TRACE: same shape as the [register] log above. Lets us verify
+    //    the token length/format is consistent across the two code
+    //    paths and the row really hit the database.
+    // eslint-disable-next-line no-console
+    console.log('[login] session created', {
+      userId: userByEmail.id,
+      role: userByEmail.role,
+      tokenPrefix: `${sessionRow.token.slice(0, 8)}\u2026`,
+      tokenLength: sessionRow.token.length,
+      expiresAt: sessionRow.expiresAt,
     });
 
     const profile = extractProfile(userByEmail);

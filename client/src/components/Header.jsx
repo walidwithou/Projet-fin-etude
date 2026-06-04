@@ -124,18 +124,20 @@ export default function Header({ onLogin, onAbout, onHome, user, onLogout, onNav
             </AnimatePresence>
           </div>
         ) : (
-
-          <><button
-            onClick={onAbout}
-            className="text-sm font-semibold text-text-muted hover:text-primary transition-colors cursor-pointer hidden sm:block"
-          >
-            À propos
-          </button><button
-            onClick={onLogin}
-            className="px-5 py-2.5 bg-primary-light text-primary rounded-full text-sm font-bold hover:bg-primary hover:text-white transition-all cursor-pointer"
-          >
-            Connexion
-          </button></>
+          <>
+            <button
+              onClick={onAbout}
+              className="text-sm font-semibold text-text-muted hover:text-primary transition-colors cursor-pointer hidden sm:block"
+            >
+              À propos
+            </button>
+            <button
+              onClick={onLogin}
+              className="px-5 py-2.5 bg-primary-light text-primary rounded-full text-sm font-bold hover:bg-primary hover:text-white transition-all cursor-pointer"
+            >
+              Connexion
+            </button>
+          </>
         )}
       </div>
     </header>

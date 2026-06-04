@@ -20,8 +20,19 @@ const normalizeRole = (role) =>
  * treating the user as logged out). Keeping this as a named constant
  * makes the intent obvious and avoids the risk of returning a
  * private route (THERAPIST, PATIENT, ADMIN) for an anonymous user.
+ *
+ * Note: the custom router in App.jsx uses the string "REGISTRATION"
+ * for the public landing page (which contains the Landing component
+ * as its first step). The names are kept in sync on purpose.
  */
 export const PUBLIC_LANDING_PAGE = 'REGISTRATION';
+
+/**
+ * Set of all known private (role-restricted) pages. Used by the
+ * router in App.jsx to decide whether it is safe to redirect to
+ * the result of `defaultPageForUser`.
+ */
+const PRIVATE_PAGES = new Set(['ADMIN', 'PATIENT', 'THERAPIST']);
 
 /**
  * Returns true only when the input looks like a real, usable user
@@ -98,6 +109,16 @@ export const canAccess = (page, user) => {
  * malformed user. If we cannot prove the user has a known role,
  * we fall back to the public landing page so the app never
  * accidentally exposes a private dashboard to a logged-out visitor.
+ *
+ * In particular:
+ *   - `defaultPageForUser(undefined)` → PUBLIC_LANDING_PAGE
+ *   - `defaultPageForUser(null)`      → PUBLIC_LANDING_PAGE
+ *   - `defaultPageForUser({})`        → PUBLIC_LANDING_PAGE
+ *   - `defaultPageForUser({role: ''})`→ PUBLIC_LANDING_PAGE
+ *   - `defaultPageForUser({role: 'patient'})`        → 'PATIENT'
+ *   - `defaultPageForUser({role: 'THERAPIST', verificationStatus: 'verified'})` → 'THERAPIST'
+ *   - `defaultPageForUser({role: 'THERAPIST'})`      → 'ACCESS_DENIED' (not verified)
+ *   - `defaultPageForUser({role: 'unknown'})`        → PUBLIC_LANDING_PAGE
  */
 export const defaultPageForUser = (user) => {
   // Guard 1 — explicit early return for the most common cases.
@@ -105,15 +126,16 @@ export const defaultPageForUser = (user) => {
     return PUBLIC_LANDING_PAGE;
   }
 
-  // Guard 2 — the user object must carry a string role. If not,
-  // we treat the session as anonymous and bounce to the landing page.
+  // Guard 2 — the user object must carry a non-empty string role.
   if (typeof user.role !== 'string' || user.role.trim() === '') {
     return PUBLIC_LANDING_PAGE;
   }
 
   const role = normalizeRole(user.role);
 
-  if (role === 'ADMIN') return 'ADMIN';
+  if (role === 'ADMIN') {
+    return 'ADMIN';
+  }
   if (role === 'THERAPIST') {
     // Unverified therapists cannot reach THERAPIST — fall back to
     // a message page that explains the situation.
@@ -122,9 +144,19 @@ export const defaultPageForUser = (user) => {
     }
     return 'THERAPIST';
   }
-  if (role === 'PATIENT') return 'PATIENT';
+  if (role === 'PATIENT') {
+    return 'PATIENT';
+  }
 
-  // Guard 3 — unknown role. Refuse to route to a private page and
-  // return the public landing page instead.
+  // Guard 3 — unknown / unhandled role. Refuse to route to a
+  // private page and return the public landing page instead.
   return PUBLIC_LANDING_PAGE;
 };
+
+/**
+ * Convenience helper used by the router to decide whether it is
+ * safe to call `setCurrentPage(target)` after evaluating
+ * `defaultPageForUser(user)`. This is the single source of truth
+ * for "is this a private role-restricted page?".
+ */
+export const isPrivatePage = (page) => PRIVATE_PAGES.has(page);

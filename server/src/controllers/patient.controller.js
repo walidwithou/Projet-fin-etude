@@ -311,6 +311,25 @@ const getQuestionnaireOptions = async (req, res, next) => {
 
 /**
  * Get matched therapists based on questionnaire (relational matching)
+ *
+ * Matching Score Formula:
+ * =======================
+ * Score is calculated as a weighted percentage (0-100).
+ * Each criterion is normalized by the patient's total preferences,
+ * ensuring the final score never exceeds 100 and is never negative.
+ *
+ * Weights:
+ *   - Pathologies match: 25%
+ *   - Languages match: 20%
+ *   - Consultation modes match: 15%
+ *   - Time slots match: 10%
+ *   - Therapeutic approach match: 15%
+ *   - Gender preference match: 10%
+ *   - Sensitivity/cultural match: 5%
+ *
+ * Formula for each weighted category:
+ *   categoryScore = (matchingItems / patientTotalItems) × weight
+ *   finalScore = sum of all categoryScores (capped at 100)
  */
 const getMatchedTherapists = async (req, res, next) => {
   try {
@@ -344,6 +363,9 @@ const getMatchedTherapists = async (req, res, next) => {
         languages: true,
         pathologies: true,
         publicTypes: true,
+        user: {
+          select: { name: true },
+        },
       },
       orderBy: [
         { rating: 'desc' },
@@ -357,96 +379,133 @@ const getMatchedTherapists = async (req, res, next) => {
     const patientLangIds = new Set(patient.languages.map(l => l.languageId));
     const patientPathIds = new Set(patient.pathologies.map(p => p.pathologyId));
 
+    // Define category weights (total = 100)
+    const WEIGHTS = {
+      pathologies: 25,
+      languages: 20,
+      consultationModes: 15,
+      timeSlots: 10,
+      therapeuticApproach: 15,
+      genderPreference: 10,
+      sensitivity: 5,
+    };
+
     // Calculate match scores using relational data
     const matchedTherapists = therapists.map((therapist) => {
       let matchScore = 0;
       const matchReasons = [];
 
-      // Match consultation modes (15 points each)
-      const therapistModeIds = new Set(therapist.consultationModes.map(cm => cm.consultationModeId));
-      const matchingModes = [...patientModeIds].filter(id => therapistModeIds.has(id));
-      if (matchingModes.length > 0) {
-        matchScore += matchingModes.length * 15;
-        matchReasons.push(`${matchingModes.length} mode(s) de consultation en commun`);
-      }
-
-      // Match time slots (10 points each)
-      const therapistSlotIds = new Set(therapist.timeSlots.map(ts => ts.timeSlotId));
-      const matchingSlots = [...patientSlotIds].filter(id => therapistSlotIds.has(id));
-      if (matchingSlots.length > 0) {
-        matchScore += matchingSlots.length * 10;
-        matchReasons.push(`${matchingSlots.length} créneau(x) horaire(s) en commun`);
-      }
-
-      // Match languages (20 points each)
-      const therapistLangIds = new Set(therapist.languages.map(l => l.languageId));
-      const matchingLangs = [...patientLangIds].filter(id => therapistLangIds.has(id));
-      if (matchingLangs.length > 0) {
-        matchScore += matchingLangs.length * 20;
-        matchReasons.push(`${matchingLangs.length} langue(s) en commun`);
-      }
-
-      // Match pathologies/expertise (25 points each)
+      // --- Pathologies match (25%) ---
       const therapistPathIds = new Set(therapist.pathologies.map(p => p.pathologyId));
       const matchingPaths = [...patientPathIds].filter(id => therapistPathIds.has(id));
-      if (matchingPaths.length > 0) {
-        matchScore += matchingPaths.length * 25;
-        matchReasons.push(`${matchingPaths.length} domaine(s) d'expertise correspondant(s)`);
+      if (patientPathIds.size > 0) {
+        const pathRatio = matchingPaths.length / patientPathIds.size;
+        matchScore += pathRatio * WEIGHTS.pathologies;
+        if (matchingPaths.length > 0) {
+          matchReasons.push(`${matchingPaths.length} domaine(s) d'expertise correspondant(s)`);
+        }
       }
 
-      // Match therapeutic approach with patient expectations (30 points)
+      // --- Languages match (20%) ---
+      const therapistLangIds = new Set(therapist.languages.map(l => l.languageId));
+      const matchingLangs = [...patientLangIds].filter(id => therapistLangIds.has(id));
+      if (patientLangIds.size > 0) {
+        const langRatio = matchingLangs.length / patientLangIds.size;
+        matchScore += langRatio * WEIGHTS.languages;
+        if (matchingLangs.length > 0) {
+          matchReasons.push(`${matchingLangs.length} langue(s) en commun`);
+        }
+      }
+
+      // --- Consultation modes match (15%) ---
+      const therapistModeIds = new Set(therapist.consultationModes.map(cm => cm.consultationModeId));
+      const matchingModes = [...patientModeIds].filter(id => therapistModeIds.has(id));
+      if (patientModeIds.size > 0) {
+        const modeRatio = matchingModes.length / patientModeIds.size;
+        matchScore += modeRatio * WEIGHTS.consultationModes;
+        if (matchingModes.length > 0) {
+          matchReasons.push(`${matchingModes.length} mode(s) de consultation en commun`);
+        }
+      }
+
+      // --- Time slots match (10%) ---
+      const therapistSlotIds = new Set(therapist.timeSlots.map(ts => ts.timeSlotId));
+      const matchingSlots = [...patientSlotIds].filter(id => therapistSlotIds.has(id));
+      if (patientSlotIds.size > 0) {
+        const slotRatio = matchingSlots.length / patientSlotIds.size;
+        matchScore += slotRatio * WEIGHTS.timeSlots;
+        if (matchingSlots.length > 0) {
+          matchReasons.push(`${matchingSlots.length} créneau(x) horaire(s) en commun`);
+        }
+      }
+
+      // --- Therapeutic approach match (15%) ---
       if (patient.attentesTherapie && therapist.approcheTherapeute) {
         const approachMatch = {
           'ECOUTE_ACTIVE': 'HUMANISTE_GESTALT',
           'EXERCICES_OUTILS': 'TCC',
           'COMPRENDRE_PASSE': 'PSYCHANALYSE',
         };
+
         if (approachMatch[patient.attentesTherapie] === therapist.approcheTherapeute) {
-          matchScore += 30;
-          matchReasons.push('Approche thérapeutique correspondante');
+          matchScore += WEIGHTS.therapeuticApproach;
+          matchReasons.push('Approche thérapeutique parfaitement correspondante');
         } else if (therapist.approcheTherapeute === 'INTEGRATIVE') {
-          matchScore += 15; // Integrative approach partially matches all
-          matchReasons.push('Approche intégrative');
+          // Integrative approach partially matches all expectations
+          matchScore += WEIGHTS.therapeuticApproach * 0.5;
+          matchReasons.push('Approche intégrative (compatible)');
         }
       }
 
-      // Match sensitivity preference (15 points)
+      // --- Gender preference match (10%) ---
+      if (patient.genrePref && therapist.gender) {
+        if (patient.genrePref === 'HOMME' && therapist.gender.toUpperCase() === 'HOMME') {
+          matchScore += WEIGHTS.genderPreference;
+          matchReasons.push('Préférence de genre respectée');
+        } else if (patient.genrePref === 'FEMME' && therapist.gender.toUpperCase() === 'FEMME') {
+          matchScore += WEIGHTS.genderPreference;
+          matchReasons.push('Préférence de genre respectée');
+        }
+        // genrePref = PEU_IMPORTE => no bonus (intentional)
+      }
+
+      // --- Sensitivity/cultural match (5%) ---
       if (patient.sensibilitePatient === 'OUI_IMPORTANT' && 
           therapist.sensibiliteTherapeute === 'INTEGRE_DEMANDE') {
-        matchScore += 15;
-        matchReasons.push('Sensibilité culturelle/spirituelle');
+        matchScore += WEIGHTS.sensitivity;
+        matchReasons.push('Sensibilité culturelle/spirituelle respectée');
       }
 
-      // Boost for higher ratings (up to 25 points)
+      // Rating boost (up to 5% bonus, not exceeding 100 total)
+      let ratingBoost = 0;
       if (therapist.rating) {
-        matchScore += parseFloat(therapist.rating) * 5;
+        ratingBoost = Math.min(parseFloat(therapist.rating), 5);
       }
 
-      // Boost for experience (up to 10 points)
-      if (therapist.yearsOfExperience) {
-        matchScore += Math.min(therapist.yearsOfExperience, 10);
-      }
+      // Final score capped at 100
+      const finalScore = Math.min(Math.round(matchScore + ratingBoost), 100);
 
       return {
         id: therapist.id,
         userId: therapist.userId,
+        name: therapist.user?.name || 'Thérapeute',
         bio: therapist.bio,
-        education: therapist.education,
-        yearsOfExperience: therapist.yearsOfExperience,
         profilePhotoUrl: therapist.profilePhotoUrl,
-        hourlyRate: therapist.hourlyRate,
+        hourlyRate: therapist.hourlyRate ? parseFloat(therapist.hourlyRate) : null,
         currency: therapist.currency,
-        rating: therapist.rating,
+        rating: therapist.rating ? parseFloat(therapist.rating) : null,
         totalReviews: therapist.totalReviews,
         approcheTherapeute: therapist.approcheTherapeute,
         sensibiliteTherapeute: therapist.sensibiliteTherapeute,
-        matchScore,
+        gender: therapist.gender,
+        matchScore: finalScore,
         matchReasons,
-        compatibility: Math.min(Math.round((matchScore / 150) * 100), 100), // Percentage
+        compatibility: finalScore, // Percentage (0-100)
       };
     });
 
-    // Sort by match score descending
+    // Filter out therapists with 0% compatibility if no matches at all
+    // and sort by match score descending
     matchedTherapists.sort((a, b) => b.matchScore - a.matchScore);
 
     res.json({
@@ -459,7 +518,7 @@ const getMatchedTherapists = async (req, res, next) => {
 };
 
 /**
- * Select a therapist
+ * Select a therapist (set currentTherapistId)
  */
 const selectTherapist = async (req, res, next) => {
   try {
@@ -484,17 +543,41 @@ const selectTherapist = async (req, res, next) => {
       });
     }
 
-    await prisma.patient.updateMany({
+    // Find the patient
+    const patient = await prisma.patient.findFirst({
       where: { userId: req.user.id },
+    });
+
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient profile not found',
+      });
+    }
+
+    // Business rule: A patient can only have one active therapist at a time
+    if (patient.currentTherapistid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vous avez déjà un thérapeute actif. Veuillez d\'abord mettre fin à la relation actuelle.',
+      });
+    }
+
+    // Use currentTherapistid (the actual field name in the database)
+    await prisma.patient.update({
+      where: { id: patient.id },
       data: {
-        matchedTherapistId: therapistId,
+        currentTherapistid: therapistId,
         updatedAt: new Date(),
       },
     });
 
     res.json({
       success: true,
-      message: 'Therapist selected successfully',
+      message: 'Thérapeute sélectionné avec succès',
+      data: {
+        currentTherapistId: therapistId,
+      },
     });
   } catch (error) {
     next(error);
@@ -535,7 +618,7 @@ const getAppointments = async (req, res, next) => {
 };
 
 /**
- * Get patient's session reports
+ * Get patient's session reports (visible to patient)
  */
 const getSessionReports = async (req, res, next) => {
   try {
@@ -550,16 +633,27 @@ const getSessionReports = async (req, res, next) => {
       });
     }
 
-    const reports = await prisma.sessionReport.findMany({
+    const reports = await prisma.appointmentOutcome.findMany({
       where: {
-        patientId: patient.id,
         isConfidential: false,
+        appointment: {
+          patientId: patient.id,
+        },
       },
       include: {
-        appointment: true,
-        therapist: true,
+        appointment: {
+          include: {
+            therapist: {
+              include: {
+                user: {
+                  select: { name: true },
+                },
+              },
+            },
+          },
+        },
       },
-      orderBy: { sessionDate: 'desc' },
+      orderBy: { createdAt: 'desc' },
     });
 
     res.json({
@@ -650,8 +744,8 @@ const getPatientById = async (req, res, next) => {
       });
     }
 
-    // If therapist, verify they are the matched therapist
-    if (req.user.role === 'therapist' && patient.matchedTherapistId !== req.user.therapistId) {
+    // If therapist, verify they are the matched therapist using currentTherapistid
+    if (req.user.role === 'therapist' && patient.currentTherapistid !== req.user.therapistId) {
       return res.status(403).json({
         success: false,
         message: 'Access denied',
