@@ -35,4 +35,19 @@ router.get('/audit-logs', adminController.getAuditLogs);
 router.get('/reports/appointments', adminController.getAppointmentReports);
 router.get('/reports/revenue', adminController.getRevenueReports);
 
+// Reconciliation — detect and fix appointment/slot inconsistencies
+router.post('/reconciliation', async (req, res, next) => {
+  try {
+    const { runReconciliation } = await import('../utils/reconciliation.js');
+    const result = await runReconciliation();
+    res.json({
+      success: true,
+      message: `${result.fixed} incohérence(s) corrigée(s)`,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

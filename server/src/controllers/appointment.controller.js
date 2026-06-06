@@ -3,17 +3,62 @@ import crypto from 'crypto';
 
 const generateId = () => crypto.randomUUID();
 
+// ---------------------------------------------------------------------------
+// Timezone-agnostic date helpers
+// ---------------------------------------------------------------------------
+// All helpers construct dates via Date.UTC so the interpreted time (e.g. 13:00)
+// is stored identically in the database. No hidden timezone offset is applied.
+// Without this, building via "new Date(y, m-1, d, h, min)" uses the server's
+// local timezone (UTC+1 for Africa/Algiers), causing the database to store
+// {h-1}:{min} UTC, which introduces a 1-hour shift relative to the UI.
+
+const buildLocalDate = (dateStr, timeStr) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const [h, min] = (timeStr || '00:00').split(':').map(Number);
+  return new Date(Date.UTC(y, (m || 1) - 1, d || 1, h || 0, min || 0, 0, 0));
+};
+
+/**
+ * Build a Date for the start (00:00:00.000) of a YYYY-MM-DD day,
+ * stored as UTC to match the Date.UTC convention above.
+ */
+const startOfLocalDay = (dateStr) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, (m || 1) - 1, d || 1, 0, 0, 0, 0));
+};
+
+/**
+ * Build a Date for the end (23:59:59.999) of a YYYY-MM-DD day,
+ * stored as UTC to match the Date.UTC convention above.
+ */
+const endOfLocalDay = (dateStr) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, (m || 1) - 1, d || 1, 23, 59, 59, 999));
+};
+
 /**
  * Create a new appointment
+ * Business rules:
+ * 1. Patient must have a currentTherapistid set (by select-therapist)
+ * 2. Patient can only have one future active appointment (scheduled/confirmed)
+ * 3. Must use a TherapistAvailableTimeSlot that is not booked
+ * 4. No time overlap with existing appointments for the same therapist
  */
 const create = async (req, res, next) => {
   try {
-    const { therapistId, scheduledAt, durationMinutes, type, notes } = req.body;
+    const { therapistId, scheduledAt, durationMinutes, type, notes, therapistAvailableTimeSlotId } = req.body;
 
     if (!therapistId || !scheduledAt) {
       return res.status(400).json({
         success: false,
         message: 'Therapist ID and scheduled time are required',
+      });
+    }
+
+    if (!therapistAvailableTimeSlotId) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid time slot ID is required',
       });
     }
 
@@ -29,7 +74,32 @@ const create = async (req, res, next) => {
       });
     }
 
-    // Verify therapist exists and is available
+    // Patient must have selected a therapist first
+    if (!patient.currentTherapistid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vous devez d\'abord sélectionner un thérapeute avant de réserver.',
+      });
+    }
+
+    // Check if patient already has a future active appointment
+    const now = new Date();
+    const existingActiveAppointment = await prisma.appointment.findFirst({
+      where: {
+        patientId: patient.id,
+        status: { in: ['scheduled', 'confirmed'] },
+        scheduledAt: { gte: now },
+      },
+    });
+
+    if (existingActiveAppointment) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vous avez déjà un rendez-vous programmé.',
+      });
+    }
+
+    // Verify therapist exists
     const therapist = await prisma.therapist.findUnique({
       where: { id: therapistId },
     });
@@ -41,10 +111,50 @@ const create = async (req, res, next) => {
       });
     }
 
-    // Check for conflicting appointments
-    const scheduledDate = new Date(scheduledAt);
-    const endTime = new Date(scheduledDate.getTime() + (durationMinutes || 60) * 60000);
+    // Verify the time slot exists, belongs to the therapist, and is not booked
+    const timeSlot = await prisma.therapistAvailableTimeSlot.findUnique({
+      where: { id: therapistAvailableTimeSlotId },
+    });
 
+    if (!timeSlot) {
+      return res.status(400).json({
+        success: false,
+        message: 'Time slot not found',
+      });
+    }
+
+    if (timeSlot.therapistId !== therapistId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Time slot does not belong to this therapist',
+      });
+    }
+
+    if (timeSlot.isBooked) {
+      return res.status(400).json({
+        success: false,
+        message: 'This time slot is already booked',
+      });
+    }
+
+    if (new Date(timeSlot.startAt) < now) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot book a time slot in the past',
+      });
+    }
+
+    // Use the slot's startAt as the SINGLE source of truth for
+    // the appointment time.
+    const scheduledDate = new Date(timeSlot.startAt);
+    const slotEnd = new Date(timeSlot.endAt);
+    const duration = durationMinutes || Math.max(
+      1,
+      Math.round((slotEnd.getTime() - scheduledDate.getTime()) / 60000),
+    );
+    const endTime = new Date(scheduledDate.getTime() + duration * 60000);
+
+    // Check for conflicting appointments (time overlap for the same therapist)
     const conflictingAppointment = await prisma.appointment.findFirst({
       where: {
         therapistId,
@@ -59,9 +169,15 @@ const create = async (req, res, next) => {
     if (conflictingAppointment) {
       return res.status(400).json({
         success: false,
-        message: 'This time slot is not available',
+        message: 'This time slot is not available.',
       });
     }
+
+    // Mark the time slot as booked
+    await prisma.therapistAvailableTimeSlot.update({
+      where: { id: therapistAvailableTimeSlotId },
+      data: { isBooked: true },
+    });
 
     // Create appointment
     const appointment = await prisma.appointment.create({
@@ -69,15 +185,25 @@ const create = async (req, res, next) => {
         id: generateId(),
         patientId: patient.id,
         therapistId,
+        therapistAvailableTimeSlotId,
         scheduledAt: scheduledDate,
-        durationMinutes: durationMinutes || 60,
+        durationMinutes: duration,
         type: type || 'video',
         notes,
         status: 'scheduled',
       },
       include: {
-        therapist: true,
-        patient: true,
+        therapist: {
+          include: {
+            user: { select: { name: true } },
+          },
+        },
+        patient: {
+          include: {
+            user: { select: { name: true } },
+          },
+        },
+        therapistAvailableTimeSlot: true,
       },
     });
 
@@ -87,9 +213,10 @@ const create = async (req, res, next) => {
         id: generateId(),
         userId: therapist.userId,
         type: 'appointment_new',
-        title: 'New Appointment',
-        message: `You have a new appointment scheduled for ${scheduledDate.toLocaleString()}`,
+        title: 'Nouvelle demande de rendez-vous',
+        message: `Un patient a réservé une séance le ${scheduledDate.toLocaleDateString('fr-FR')} à ${scheduledDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`,
         actionUrl: `/appointments/${appointment.id}`,
+        metadata: { appointmentId: appointment.id },
       },
     });
 
@@ -112,9 +239,18 @@ const getById = async (req, res, next) => {
     const appointment = await prisma.appointment.findUnique({
       where: { id },
       include: {
-        therapist: true,
-        patient: true,
+        therapist: {
+          include: {
+            user: { select: { name: true } },
+          },
+        },
+        patient: {
+          include: {
+            user: { select: { name: true } },
+          },
+        },
         appointmentOutcome: true,
+        therapistAvailableTimeSlot: true,
       },
     });
 
@@ -151,13 +287,37 @@ const getById = async (req, res, next) => {
 
 /**
  * Update appointment status
+ * Allowed transitions:
+ *   scheduled  → confirmed, cancelled
+ *   confirmed  → completed, cancelled, no_show
+ *   completed  → (terminal)
+ *   cancelled  → (terminal)
+ *   no_show    → (terminal)
+ *
+ * Slot synchronization rules:
+ *   cancelled / no_show → isBooked = false (slot freed)
+ *   completed           → isBooked = false (slot freed)
+ *   confirmed           → isBooked stays true
+ *
+ * currentTherapistId rules (BUG 4 FIX):
+ *   NEVER reset currentTherapistId on cancel/no_show/complete.
+ *
+ * Notification rules (refus / annulation):
+ *   scheduled → cancelled = "Demande refusée"      (type: appointment_refused)
+ *   confirmed → cancelled = "Rendez-vous annulé"    (type: appointment_cancelled)
+ *   → confirmed            = "Rendez-vous confirmé" (type: appointment_confirmed)
+ *
+ * The patient receives a context-rich notification that includes the
+ * appointment date, time, and therapist name, and is rendered by the
+ * new "Notifications" tab in the patient dashboard.
  */
 const updateStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
-    const validStatuses = ['confirmed', 'in_progress', 'completed', 'no_show', 'cancelled'];
+    // Only allow official statuses
+    const validStatuses = ['confirmed', 'completed', 'cancelled', 'no_show'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -167,7 +327,13 @@ const updateStatus = async (req, res, next) => {
 
     const appointment = await prisma.appointment.findUnique({
       where: { id },
-      include: { therapist: true, patient: true },
+      include: {
+        therapist: {
+          include: { user: { select: { name: true } } },
+        },
+        patient: true,
+        therapistAvailableTimeSlot: true,
+      },
     });
 
     if (!appointment) {
@@ -185,20 +351,155 @@ const updateStatus = async (req, res, next) => {
       });
     }
 
-    const updated = await prisma.appointment.update({
-      where: { id },
-      data: { status, updatedAt: new Date() },
+    // Validate state transitions
+    const currentStatus = appointment.status;
+    const allowedTransitions = {
+      scheduled: ['confirmed', 'cancelled'],
+      confirmed: ['completed', 'cancelled', 'no_show'],
+      completed: [],
+      cancelled: [],
+      no_show: [],
+    };
+
+    if (!allowedTransitions[currentStatus]?.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot transition from '${currentStatus}' to '${status}'`,
+      });
+    }
+
+    // -- SLOT SYNCHRONIZATION (BUG 2 FIX) -- wrapped in a single transaction
+    // For terminal states, we must (a) clear the FK on the appointment so the
+    // UNIQUE index releases the slot, and (b) flip the slot's soft-lock back
+    // to isBooked = false. Doing these in a single transaction guarantees
+    // that a partial failure can never leave an orphan FK pointing at a
+    // freed slot (the exact bug we just fixed for `cancel()`).
+    const isTerminal = ['cancelled', 'no_show', 'completed'].includes(status);
+    const slotId = appointment.therapistAvailableTimeSlotId;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const updateData = {
+        status,
+        updatedAt: new Date(),
+      };
+
+      // 1 + 2. Nullify the FK for terminal states to release UNIQUE
+      if (isTerminal) {
+        updateData.therapistAvailableTimeSlotId = null;
+      }
+
+      if (status === 'cancelled') {
+        updateData.cancelledAt = new Date();
+        updateData.cancelledBy = req.user.id;
+      }
+
+      // 1 + 2. Update the appointment
+      const apptUpdate = await tx.appointment.update({
+        where: { id },
+        data: updateData,
+      });
+
+      // 3. Free the slot's soft-lock (terminal states only)
+      if (isTerminal && slotId) {
+        await tx.therapistAvailableTimeSlot.update({
+          where: { id: slotId },
+          data: { isBooked: false },
+        });
+      }
+
+      // When confirmed, ensure currentTherapistId is set
+      if (status === 'confirmed') {
+        await tx.patient.update({
+          where: { id: appointment.patientId },
+          data: {
+            currentTherapistid: appointment.therapistId,
+            updatedAt: new Date(),
+          },
+        });
+      }
+
+      return apptUpdate;
     });
 
-    // Notify patient of status change
+
+    // -- NOTIFICATION --
+    // Build a context-rich notification for the patient. The type, title and
+    // message are chosen based on the state transition so the patient UI can
+    // render "Demande refusée" and "Rendez-vous annulé" with different colors
+    // and copy.
+    //
+    //   scheduled → cancelled : refus
+    //   confirmed → cancelled : annulation (rendez-vous déjà confirmé)
+    //   → confirmed           : confirmation
+    //   → completed / no_show : bilan
+    const therapistName = appointment.therapist?.user?.name || 'votre thérapeute';
+    const apptDate = new Date(appointment.scheduledAt);
+    const formattedDate = apptDate.toLocaleDateString('fr-FR', {
+      day: 'numeric',
+      month: 'long',
+    });
+    const formattedTime = apptDate.toLocaleTimeString('fr-FR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    let notificationType = 'appointment_update';
+    let notificationTitle = 'Rendez-vous mis à jour';
+    let notificationMessage = '';
+
+    if (status === 'cancelled') {
+      if (currentStatus === 'scheduled') {
+        // Refus du thérapeute : la demande n'a pas été acceptée.
+        notificationType = 'appointment_refused';
+        notificationTitle = 'Demande refusée';
+        notificationMessage =
+          `Votre demande de rendez-vous du ${formattedDate} à ${formattedTime} ` +
+          `avec ${therapistName} n'a pas été acceptée. ` +
+          `Vous pouvez sélectionner un autre créneau.`;
+      } else {
+        // Annulation d'un rendez-vous déjà confirmé.
+        notificationType = 'appointment_cancelled';
+        notificationTitle = 'Rendez-vous annulé';
+        notificationMessage =
+          `Votre rendez-vous du ${formattedDate} à ${formattedTime} ` +
+          `avec ${therapistName} a été annulé. ` +
+          `Veuillez réserver un nouveau créneau.`;
+      }
+    } else if (status === 'confirmed') {
+      notificationType = 'appointment_confirmed';
+      notificationTitle = 'Rendez-vous confirmé';
+      notificationMessage =
+        `Votre rendez-vous du ${formattedDate} à ${formattedTime} ` +
+        `avec ${therapistName} a été confirmé.`;
+    } else if (status === 'completed') {
+      notificationType = 'appointment_completed';
+      notificationTitle = 'Séance terminée';
+      notificationMessage =
+        `Votre séance du ${formattedDate} à ${formattedTime} ` +
+        `avec ${therapistName} a été marquée comme terminée.`;
+    } else if (status === 'no_show') {
+      notificationType = 'appointment_no_show';
+      notificationTitle = 'Absence enregistrée';
+      notificationMessage =
+        `Vous avez été marqué(e) comme absent(e) à la séance du ${formattedDate} ` +
+        `à ${formattedTime} avec ${therapistName}.`;
+    } else {
+      notificationMessage = `Le statut de votre rendez-vous est passé à : ${status}`;
+    }
+
     await prisma.notification.create({
       data: {
         id: generateId(),
         userId: appointment.patient.userId,
-        type: 'appointment_update',
-        title: 'Appointment Updated',
-        message: `Your appointment status has been updated to: ${status}`,
+        type: notificationType,
+        title: notificationTitle,
+        message: notificationMessage,
         actionUrl: `/appointments/${id}`,
+        metadata: {
+          appointmentId: id,
+          status,
+          fromStatus: currentStatus,
+        },
       },
     });
 
@@ -213,6 +514,7 @@ const updateStatus = async (req, res, next) => {
 
 /**
  * Cancel appointment
+ * BUG 4 FIX: currentTherapistId is NEVER reset here.
  */
 const cancel = async (req, res, next) => {
   try {
@@ -221,7 +523,11 @@ const cancel = async (req, res, next) => {
 
     const appointment = await prisma.appointment.findUnique({
       where: { id },
-      include: { therapist: true, patient: true },
+      include: {
+        therapist: { include: { user: { select: { name: true } } } },
+        patient: true,
+        therapistAvailableTimeSlot: true,
+      },
     });
 
     if (!appointment) {
@@ -243,29 +549,126 @@ const cancel = async (req, res, next) => {
       });
     }
 
-    const updated = await prisma.appointment.update({
-      where: { id },
-      data: {
-        status: 'cancelled',
-        cancelledAt: new Date(),
-        cancelledBy: req.user.id,
-        notes: reason || appointment.notes,
-        updatedAt: new Date(),
-      },
+    // Capture the status BEFORE the transaction so we can distinguish
+    // "refus" (scheduled -> cancelled) from "annulation" (confirmed -> cancelled)
+    // when the therapist is the one cancelling.
+    const previousStatus = appointment.status;
+
+    // -------------------------------------------------------------------------
+    // Atomic cancellation: appointment + slot commit together
+    // -------------------------------------------------------------------------
+    // BUG FIX: previously the slot was updated first, then the appointment
+    // separately, with no transaction wrapping both. If the second step
+    // failed (or the column was NOT NULL at the time) we were left with an
+    // orphan cancelled appointment whose therapistAvailableTimeSlotId still
+    // occupied the UNIQUE index, blocking re-booking of the slot.
+    //
+    // We now perform both writes inside a single Prisma transaction with the
+    // required order:
+    //   1. Appointment.status = 'cancelled'
+    //   2. Appointment.therapistAvailableTimeSlotId = null  (releases UNIQUE)
+    //   3. Slot.isBooked = false                              (soft-lock freed)
+    // If any step fails, the whole transaction rolls back and the slot stays
+    // attached to the still-active appointment, which is the correct state.
+    const slotId = appointment.therapistAvailableTimeSlotId;
+    const updated = await prisma.$transaction(async (tx) => {
+      // 1 + 2. Update the appointment: status -> cancelled, clear the FK
+      const apptUpdate = await tx.appointment.update({
+        where: { id },
+        data: {
+          status: 'cancelled',
+          therapistAvailableTimeSlotId: null,
+          cancelledAt: new Date(),
+          cancelledBy: req.user.id,
+          notes: reason || appointment.notes,
+          updatedAt: new Date(),
+        },
+      });
+
+      // 3. Free the slot's soft-lock (only if there was one)
+      if (slotId) {
+        await tx.therapistAvailableTimeSlot.update({
+          where: { id: slotId },
+          data: { isBooked: false },
+        });
+      }
+
+      return apptUpdate;
     });
 
-    // Notify the other party
-    const notifyUserId = isPatient ? appointment.therapist.userId : appointment.patient.userId;
-    await prisma.notification.create({
-      data: {
-        id: generateId(),
-        userId: notifyUserId,
-        type: 'appointment_cancelled',
-        title: 'Appointment Cancelled',
-        message: `An appointment scheduled for ${appointment.scheduledAt.toLocaleString()} has been cancelled.`,
-        actionUrl: `/appointments/${id}`,
-      },
+    // Notify the other party (outside the transaction so a notification
+    // failure doesn't roll back the cancellation).
+    //
+    // When the patient cancels, the therapist is notified with a generic
+    // "Le patient a annulé" message.
+    //
+    // When the therapist cancels, the patient is notified with a context-rich
+    // notification that distinguishes:
+    //   - previousStatus === 'scheduled' : refus ("Demande refusée")
+    //   - previousStatus === 'confirmed' : annulation ("Rendez-vous annulé")
+    const therapistName = appointment.therapist?.user?.name || 'votre thérapeute';
+    const apptDate = new Date(appointment.scheduledAt);
+    const formattedDate = apptDate.toLocaleDateString('fr-FR', {
+      day: 'numeric',
+      month: 'long',
     });
+    const formattedTime = apptDate.toLocaleTimeString('fr-FR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    if (isPatient) {
+      await prisma.notification.create({
+        data: {
+          id: generateId(),
+          userId: appointment.therapist.userId,
+          type: 'appointment_cancelled',
+          title: 'Rendez-vous annulé',
+          message: `Le patient a annulé le rendez-vous du ${formattedDate} à ${formattedTime}.`,
+          actionUrl: `/appointments/${id}`,
+          metadata: { appointmentId: id, cancelledBy: 'patient' },
+        },
+      });
+    } else {
+      // Therapist (or admin) cancelled — notify the patient with the
+      // appropriate copy depending on whether this was a refus or a
+      // confirmed-appointment cancellation.
+      let type;
+      let title;
+      let message;
+
+      if (previousStatus === 'scheduled') {
+        type = 'appointment_refused';
+        title = 'Demande refusée';
+        message =
+          `Votre demande de rendez-vous du ${formattedDate} à ${formattedTime} ` +
+          `avec ${therapistName} n'a pas été acceptée. ` +
+          `Vous pouvez sélectionner un autre créneau.`;
+      } else {
+        type = 'appointment_cancelled';
+        title = 'Rendez-vous annulé';
+        message =
+          `Votre rendez-vous du ${formattedDate} à ${formattedTime} ` +
+          `avec ${therapistName} a été annulé. ` +
+          `Veuillez réserver un nouveau créneau.`;
+      }
+
+      await prisma.notification.create({
+        data: {
+          id: generateId(),
+          userId: appointment.patient.userId,
+          type,
+          title,
+          message,
+          actionUrl: `/appointments/${id}`,
+          metadata: {
+            appointmentId: id,
+            cancelledBy: 'therapist',
+            fromStatus: previousStatus,
+          },
+        },
+      });
+    }
 
     res.json({
       success: true,
@@ -282,7 +685,8 @@ const cancel = async (req, res, next) => {
 const reschedule = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { scheduledAt } = req.body;
+    const { scheduledAt, therapistAvailableTimeSlotId } = req.body;
+
 
     if (!scheduledAt) {
       return res.status(400).json({
@@ -293,7 +697,11 @@ const reschedule = async (req, res, next) => {
 
     const appointment = await prisma.appointment.findUnique({
       where: { id },
-      include: { therapist: true, patient: true },
+      include: {
+        therapist: true,
+        patient: true,
+        therapistAvailableTimeSlot: true,
+      },
     });
 
     if (!appointment) {
@@ -314,12 +722,47 @@ const reschedule = async (req, res, next) => {
       });
     }
 
+    // If a new time slot is provided, validate and swap
+    if (therapistAvailableTimeSlotId && therapistAvailableTimeSlotId !== appointment.therapistAvailableTimeSlotId) {
+      const newTimeSlot = await prisma.therapistAvailableTimeSlot.findUnique({
+        where: { id: therapistAvailableTimeSlotId },
+      });
+
+      if (!newTimeSlot) {
+        return res.status(400).json({
+          success: false,
+          message: 'New time slot not found',
+        });
+      }
+
+      if (newTimeSlot.isBooked) {
+        return res.status(400).json({
+          success: false,
+          message: 'New time slot is already booked',
+        });
+      }
+
+      // Free old slot, book new slot
+      if (appointment.therapistAvailableTimeSlotId) {
+        await prisma.therapistAvailableTimeSlot.update({
+          where: { id: appointment.therapistAvailableTimeSlotId },
+          data: { isBooked: false },
+        });
+      }
+
+      await prisma.therapistAvailableTimeSlot.update({
+        where: { id: therapistAvailableTimeSlotId },
+        data: { isBooked: true },
+      });
+    }
+
     const newDate = new Date(scheduledAt);
     const updated = await prisma.appointment.update({
       where: { id },
       data: {
         scheduledAt: newDate,
-        status: 'scheduled', // Reset to scheduled when rescheduled
+        ...(therapistAvailableTimeSlotId ? { therapistAvailableTimeSlotId } : {}),
+        status: 'scheduled',
         updatedAt: new Date(),
       },
     });
@@ -331,9 +774,10 @@ const reschedule = async (req, res, next) => {
         id: generateId(),
         userId: notifyUserId,
         type: 'appointment_rescheduled',
-        title: 'Appointment Rescheduled',
-        message: `An appointment has been rescheduled to ${newDate.toLocaleString()}.`,
+        title: 'Rendez-vous reprogrammé',
+        message: `Le rendez-vous a été reprogrammé au ${newDate.toLocaleDateString('fr-FR')} à ${newDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.`,
         actionUrl: `/appointments/${id}`,
+        metadata: { appointmentId: id },
       },
     });
 
@@ -347,7 +791,7 @@ const reschedule = async (req, res, next) => {
 };
 
 /**
- * Get available slots for a therapist
+ * Get available slots for a therapist for a given day.
  */
 const getAvailableSlots = async (req, res, next) => {
   try {
@@ -365,64 +809,60 @@ const getAvailableSlots = async (req, res, next) => {
       });
     }
 
-    // Get therapist's availability
-    const availability = therapist.availability || {};
-    const requestedDate = date ? new Date(date) : new Date();
-    const dayOfWeek = requestedDate.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    let dateStr;
+    if (date) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        dateStr = date;
+      } else {
+        const d = new Date(date);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid date parameter',
+          });
+        }
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        dateStr = `${y}-${m}-${dd}`;
+      }
+    } else {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      dateStr = `${y}-${m}-${dd}`;
+    }
 
-    // Get booked appointments for the date
-    const startOfDay = new Date(requestedDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(requestedDate);
-    endOfDay.setHours(23, 59, 59, 999);
+    const startOfDay = startOfLocalDay(dateStr);
+    const endOfDay = endOfLocalDay(dateStr);
 
-    const bookedAppointments = await prisma.appointment.findMany({
+    const availableSlots = await prisma.therapistAvailableTimeSlot.findMany({
       where: {
         therapistId,
-        scheduledAt: {
+        isBooked: false,
+        startAt: {
           gte: startOfDay,
           lte: endOfDay,
         },
-        status: { in: ['scheduled', 'confirmed'] },
       },
-      select: { scheduledAt: true, durationMinutes: true },
+      orderBy: { startAt: 'asc' },
     });
 
-    // Generate available slots based on availability and booked times
-    const slots = [];
-    const dayAvailability = availability[dayOfWeek] || [];
-
-    for (const slot of dayAvailability) {
-      const [startHour, startMin] = slot.start.split(':').map(Number);
-      const [endHour, endMin] = slot.end.split(':').map(Number);
-
-      let currentSlot = new Date(startOfDay);
-      currentSlot.setHours(startHour, startMin, 0, 0);
-
-      const slotEnd = new Date(startOfDay);
-      slotEnd.setHours(endHour, endMin, 0, 0);
-
-      while (currentSlot < slotEnd) {
-        const isBooked = bookedAppointments.some((appt) => {
-          const apptStart = new Date(appt.scheduledAt);
-          const apptEnd = new Date(apptStart.getTime() + appt.durationMinutes * 60000);
-          return currentSlot >= apptStart && currentSlot < apptEnd;
-        });
-
-        if (!isBooked && currentSlot > new Date()) {
-          slots.push({
-            start: new Date(currentSlot),
-            end: new Date(currentSlot.getTime() + 60 * 60000),
-          });
-        }
-
-        currentSlot = new Date(currentSlot.getTime() + 60 * 60000); // 1 hour slots
-      }
-    }
+    // Filter out past slots
+    const nowDate = new Date();
+    const futureSlots = availableSlots.filter(
+      (slot) => new Date(slot.startAt) > nowDate,
+    );
 
     res.json({
       success: true,
-      data: slots,
+      data: futureSlots.map((slot) => ({
+        id: slot.id,
+        startAt: slot.startAt,
+        endAt: slot.endAt,
+        isBooked: slot.isBooked,
+      })),
     });
   } catch (error) {
     next(error);
@@ -431,7 +871,10 @@ const getAvailableSlots = async (req, res, next) => {
 
 /**
  * Create appointment outcome (session report) for an appointment
- * Uses the AppointmentOutcome model (the actual model name in the database)
+ *
+ * BUG 1 FIX: Free the slot when marking as completed.
+ * BUG 2 FIX: Clear the appointment FK too, inside the same transaction,
+ *   so the UNIQUE index releases the slot.
  */
 const createSessionReport = async (req, res, next) => {
   try {
@@ -448,7 +891,11 @@ const createSessionReport = async (req, res, next) => {
 
     const appointment = await prisma.appointment.findUnique({
       where: { id },
-      include: { therapist: true, patient: true },
+      include: {
+        therapist: true,
+        patient: true,
+        therapistAvailableTimeSlot: true,
+      },
     });
 
     if (!appointment) {
@@ -478,23 +925,51 @@ const createSessionReport = async (req, res, next) => {
       });
     }
 
-    const outcome = await prisma.appointmentOutcome.create({
-      data: {
-        appointmentId: id,
-        sessionNotes,
-        interventionsUsed: interventionsUsed || [],
-        progressAssessment,
-        riskAssessment,
-        isConfidential: isConfidential !== false,
-        rating: rating || null,
-        comment: comment || null,
-      },
-    });
+    // -------------------------------------------------------------------------
+    // Atomic completion: outcome + appointment status + slot release commit
+    // together, in the required order:
+    //   1. Create AppointmentOutcome
+    //   2. Appointment.status = 'completed'
+    //   3. Appointment.therapistAvailableTimeSlotId = null  (releases UNIQUE)
+    //   4. Slot.isBooked = false                              (soft-lock freed)
+    // Previously the FK was NOT nulled on completion, leaving a completed
+    // appointment that still occupied the UNIQUE index on the slot.
+    // -------------------------------------------------------------------------
+    const slotId = appointment.therapistAvailableTimeSlotId;
+    const outcome = await prisma.$transaction(async (tx) => {
+      // 1. Create the outcome
+      const created = await tx.appointmentOutcome.create({
+        data: {
+          appointmentId: id,
+          sessionNotes,
+          interventionsUsed: interventionsUsed || [],
+          progressAssessment,
+          riskAssessment,
+          isConfidential: isConfidential !== false,
+          rating: rating || null,
+          comment: comment || null,
+        },
+      });
 
-    // Update appointment status to completed
-    await prisma.appointment.update({
-      where: { id },
-      data: { status: 'completed', updatedAt: new Date() },
+      // 2 + 3. Mark appointment completed AND clear the FK
+      await tx.appointment.update({
+        where: { id },
+        data: {
+          status: 'completed',
+          therapistAvailableTimeSlotId: null,
+          updatedAt: new Date(),
+        },
+      });
+
+      // 4. Free the slot's soft-lock
+      if (slotId) {
+        await tx.therapistAvailableTimeSlot.update({
+          where: { id: slotId },
+          data: { isBooked: false },
+        });
+      }
+
+      return created;
     });
 
     res.status(201).json({
@@ -506,9 +981,9 @@ const createSessionReport = async (req, res, next) => {
   }
 };
 
+
 /**
  * Get appointment outcome (session report) for an appointment
- * Uses the AppointmentOutcome model
  */
 const getSessionReport = async (req, res, next) => {
   try {
@@ -581,8 +1056,16 @@ const getAll = async (req, res, next) => {
       prisma.appointment.findMany({
         where,
         include: {
-          therapist: true,
-          patient: true,
+          therapist: {
+            include: {
+              user: { select: { name: true } },
+            },
+          },
+          patient: {
+            include: {
+              user: { select: { name: true } },
+            },
+          },
         },
         skip,
         take: parseInt(limit),

@@ -8,6 +8,13 @@ const getProfile = async (req, res, next) => {
     const patient = await prisma.patient.findFirst({
       where: { userId: req.user.id },
       include: {
+        // Include the assigned therapist so the patient dashboard
+        // can display the real name without a second API call.
+        currentTherapist: {
+          include: {
+            user: { select: { id: true, name: true, email: true } },
+          },
+        },
         consultationModes: {
           include: { consultationMode: true },
         },
@@ -33,6 +40,19 @@ const getProfile = async (req, res, next) => {
     // Transform the data to a cleaner format
     const transformedPatient = {
       ...patient,
+      // Flatten the currentTherapist for the frontend.
+      // The frontend reads `currentTherapistName` and the full
+      // `currentTherapist` object directly.
+      currentTherapist: patient.currentTherapist
+        ? {
+            id: patient.currentTherapist.id,
+            userId: patient.currentTherapist.userId,
+            name: patient.currentTherapist.user?.name || null,
+            email: patient.currentTherapist.user?.email || null,
+            approcheTherapeute: patient.currentTherapist.approcheTherapeute || null,
+            profilePhotoUrl: patient.currentTherapist.profilePhotoUrl || null,
+          }
+        : null,
       questionnaire: {
         genrePref: patient.genrePref,
         sensibilitePatient: patient.sensibilitePatient,
@@ -603,7 +623,16 @@ const getAppointments = async (req, res, next) => {
     const appointments = await prisma.appointment.findMany({
       where: { patientId: patient.id },
       include: {
-        therapist: true,
+        therapist: {
+          include: {
+            user: { select: { name: true, email: true } },
+          },
+        },
+        // Surface the underlying TherapistAvailableTimeSlot so the
+        // frontend can show the precise time the patient booked
+        // (matches the slots rendered in the calendar).
+        therapistAvailableTimeSlot: true,
+        appointmentOutcome: true,
       },
       orderBy: { scheduledAt: 'desc' },
     });

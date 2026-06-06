@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+﻿import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Calendar, 
-  MessageSquare, 
-  Clock, 
+import {
+  Calendar,
+  MessageSquare,
+  Clock,
   RefreshCw,
   Menu,
   X,
@@ -19,59 +19,26 @@ import {
   User,
   Mail,
   Shield,
-  AlertTriangle
+  AlertTriangle,
+  Loader2,
+  Bell,
+  CheckCircle2,
+  XCircle,
+  Trash2,
+  CheckCheck
 } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import ChatWidget from '../components/ChatWidget';
 import SessionReport from '../components/SessionReport';
-import { removeToken } from '../services/api';
-
-const THERAPIST_SCHEDULES = {
-  "Dr. Amine B.": {
-    days: [2], // Tuesday - Mardi
-    daysText: "Mardi",
-    hoursText: "12:00 à 15:00",
-    start: "12:00",
-    end: "15:00",
-    slotDuration: 30
-  },
-  "Mme Sarah K.": {
-    days: [1, 3], // Monday, Wednesday - Lundi, Mercredi
-    daysText: "Lundi et Mercredi",
-    hoursText: "09:00 à 12:00",
-    start: "09:00",
-    end: "12:00",
-    slotDuration: 30
-  },
-  "Dr. Lynda M.": {
-    days: [4], // Thursday - Jeudi
-    daysText: "Jeudi",
-    hoursText: "14:00 à 18:00",
-    start: "14:00",
-    end: "18:00",
-    slotDuration: 60
-  },
-  "Mr. Yacine T.": {
-    days: [6], // Saturday - Samedi
-    daysText: "Samedi",
-    hoursText: "10:00 à 14:00",
-    start: "10:00",
-    end: "14:00",
-    slotDuration: 30
-  }
-};
-
-const getTherapistSchedule = (name) => {
-  return THERAPIST_SCHEDULES[name] || {
-    days: [1, 4], // Lundi et Jeudi
-    daysText: "Lundi et Jeudi",
-    hoursText: "14:00 à 17:00",
-    start: "14:00",
-    end: "17:00",
-    slotDuration: 30
-  };
-};
+import {
+  removeToken,
+  patient as patientApi,
+  appointment as appointmentApi,
+  publicApi,
+  notification as notificationApi,
+} from '../services/api';
+import { useAuth } from '../auth/AuthContext';
 
 const MONTHS_FR = [
   "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
@@ -80,18 +47,27 @@ const MONTHS_FR = [
 
 const DAYS_FR = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
 
+// ---------------------------------------------------------------------------
+// Timezone-safe date helpers
+// ---------------------------------------------------------------------------
+// The backend now stores slot timestamps in the server's local timezone
+// and returns them as ISO strings. The frontend formats them with
+// `formatYmdLocal()` below to compute the calendar day. NEVER use
+// `toISOString().split('T')[0]` for display, because that produces the
+// UTC date which can be a day before/after the user's local date.
+// ---------------------------------------------------------------------------
+const formatYmdLocal = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 const isPastDate = (year, month, day) => {
   const d = new Date(year, month, day);
   const today = new Date();
   const todayReset = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   return d < todayReset;
-};
-
-const isDateSelectable = (year, month, day, schedule) => {
-  if (isPastDate(year, month, day)) return false;
-  const d = new Date(year, month, day);
-  const dayOfWeek = d.getDay(); // Sunday is 0, Monday is 1...
-  return schedule.days.includes(dayOfWeek);
 };
 
 const formatDateFr = (date) => {
@@ -104,180 +80,400 @@ const formatDateFr = (date) => {
   return `${dayName} ${dayNum} ${monthName} ${year}`;
 };
 
+// BUG 1 FIX (client side): UTC-aware date formatter.
+// Appointment timestamps are stored in UTC on the server (via Date.UTC).
+// When the browser reads them, `date.getDay() / getDate() / getMonth()`
+// would apply the local timezone offset, which can shift the displayed
+// day for late-evening/early-morning slots. To display the same date
+// the therapist entered, we use the UTC getters below.
+const formatDateFrUtc = (date) => {
+  if (!date) return "";
+  const daysFull = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
+  const dayName = daysFull[date.getUTCDay()];
+  const dayNum = date.getUTCDate();
+  const monthName = MONTHS_FR[date.getUTCMonth()];
+  const year = date.getUTCFullYear();
+  return `${dayName} ${dayNum} ${monthName} ${year}`;
+};
+
+// Format a time from an ISO string using UTC components,
+// so 13:00 UTC renders as "13:00" regardless of the browser's timezone.
+const formatTime = (dateStr) => {
+  const d = new Date(dateStr);
+  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+};
+
+const getStatusColor = (status) => {
+  const colors = {
+    scheduled: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
+    confirmed: 'text-green-500 bg-green-500/10 border-green-500/20',
+    completed: 'text-blue-500 bg-blue-500/10 border-blue-500/20',
+    cancelled: 'text-red-500 bg-red-500/10 border-red-500/20',
+    no_show: 'text-gray-500 bg-gray-500/10 border-gray-500/20',
+  };
+  return colors[status] || 'text-text-muted bg-bg-main border-border-color';
+};
+
+const getStatusLabel = (status) => {
+  const labels = {
+    scheduled: 'Programmé',
+    confirmed: 'Confirmé',
+    completed: 'Terminé',
+    cancelled: 'Annulé',
+    no_show: 'Absent',
+  };
+  return labels[status] || status;
+};
+
 export default function Patient({ onNavigateToPage, currentTherapist }) {
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('chat');
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth > 1024);
   const [selectedSession, setSelectedSession] = useState(null);
 
-  // Dynamic interactive rating states
-  const [ratingFeedbackSelected, setRatingFeedbackSelected] = useState(0);
-  const [ratingFeedbackHover, setRatingFeedbackHover] = useState(0);
-  const [ratingFeedbackComment, setRatingFeedbackComment] = useState('');
+  // Data states
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [patientProfile, setPatientProfile] = useState(null);
+  const [appointments, setAppointments] = useState([]);
+  const [sessionReports, setSessionReports] = useState([]);
+  const [therapistInfo, setTherapistInfo] = useState(null);
 
-  // Advanced Constrained Scheduling States
+  // Booking states
   const [bookingStep, setBookingStep] = useState(0);
   const [selectedDate, setSelectedDate] = useState(null);
   const [selectedTimeSlot, setSelectedTimeSlot] = useState(null);
+  const [selectedSlotId, setSelectedSlotId] = useState(null);
   const [consultationType, setConsultationType] = useState('teleconsultation');
   const [expeditionNotification, setExpeditionNotification] = useState(false);
+  const [bookingLoading, setBookingLoading] = useState(false);
+  const [bookingError, setBookingError] = useState('');
+  const [lastBooking, setLastBooking] = useState(null);
+  const [availableSlots, setAvailableSlots] = useState([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+
+  // Rating states
+  const [ratingFeedbackSelected, setRatingFeedbackSelected] = useState(0);
+  const [ratingFeedbackHover, setRatingFeedbackHover] = useState(0);
+  const [ratingFeedbackComment, setRatingFeedbackComment] = useState('');
+  const [ratingLoading, setRatingLoading] = useState(false);
+
   const [showChangeTherapistConfirm, setShowChangeTherapistConfirm] = useState(false);
   
   const todayDate = new Date();
   const [currentMonth, setCurrentMonth] = useState(todayDate.getMonth());
   const [currentYear, setCurrentYear] = useState(todayDate.getFullYear());
 
-  const [patientName, setPatientName] = useState('Walid B.');
-  const [patientEmail, setPatientEmail] = useState('walid@example.com');
-  const [patientPhone, setPatientPhone] = useState('');
-  const [patientNotes, setPatientNotes] = useState('');
-
-  const [sessions, setSessions] = useState(() => {
-    const stored = localStorage.getItem('app_sessions');
-    if (stored) {
+  // Load data on mount.
+  //
+  // The /patients/profile endpoint now returns the assigned therapist
+  // directly in `profile.currentTherapist` (with the real name from
+  // the User table), so we no longer need to make a second public
+  // call to resolve the name. If for any reason the relation is
+  // missing (legacy data, mid-migration), we fall back to the first
+  // appointment's therapist, then to the prop. We never invent a
+  // fake "Mon thérapeute" placeholder anymore.
+  useEffect(() => {
+    const loadData = async () => {
+      setLoading(true);
+      setError(null);
       try {
-        return JSON.parse(stored);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    const defaultSessions = [
-      { 
-        id: 1, 
-        patientName: 'Walid B.',
-        therapistName: 'Dr. Amine B.',
-        date: '28 Avril 2024', 
-        duration: '45 min', 
-        rating: 5, 
-        rated: true,
-        note: 'Excellente séance, très apaisante.',
-        status: 'Terminée',
-        report: {
-          summary: "Discussion approfondie sur les déclencheurs d'anxiété professionnelle. Le patient a identifié des schémas de pensée automatiques liés à la performance.",
-          homework: "Pratiquer l'exercice de respiration 4-7-8 avant les réunions importantes.",
-          nextGoals: ["Gestion des limites", "Techniques d'ancrage"]
-        }
-      },
-      { 
-        id: 2, 
-        patientName: 'Walid B.',
-        therapistName: 'Dr. Amine B.',
-        date: '21 Avril 2024', 
-        duration: '50 min', 
-        rating: 4, 
-        rated: true,
-        note: 'Bon échange sur la gestion du stress.',
-        status: 'Terminée',
-        report: {
-          summary: "Introduction aux concepts de pleine conscience. Analyse des épisodes de stress de la semaine passée.",
-          homework: "Journalisation des émotions quotidiennes.",
-          nextGoals: ["Identification des besoins", "Auto-compassion"]
-        }
-      },
-      { 
-        id: 3, 
-        patientName: 'Walid B.',
-        therapistName: 'Dr. Amine B.',
-        date: '14 Avril 2024', 
-        duration: '45 min', 
-        rating: 5, 
-        rated: true,
-        note: 'Première séance très prometteuse.',
-        status: 'Terminée',
-        report: {
-          summary: "Établissement de l'alliance thérapeutique. Définition des objectifs à court et long terme.",
-          homework: "Réflexion sur les attentes vis-à-vis de la thérapie.",
-          nextGoals: ["Anamnèse", "Planification"]
-        }
-      },
-      {
-        id: 4,
-        patientName: 'Walid B.',
-        therapistName: 'Dr. Amine B.',
-        date: '15 Mai 2024',
-        duration: '45 min',
-        rating: 0,
-        rated: false,
-        note: '',
-        status: 'Terminée',
-        report: {
-          summary: "Travail approfondi sur la restructuration cognitive. Exercices pratiques de relaxation et gestion des émotions.",
-          homework: "Prendre 5 minutes de pause toutes les 2 heures.",
-          nextGoals: ["Amélioration du sommeil", "Routine bien-être"]
-        }
-      }
-    ];
-    localStorage.setItem('app_sessions', JSON.stringify(defaultSessions));
-    return defaultSessions;
-  });
+        const [profileRes, appointmentsRes, reportsRes] = await Promise.all([
+          patientApi.getProfile(),
+          patientApi.getAppointments(),
+          patientApi.getSessionReports(),
+        ]);
 
-  const handleRateSession = (id, rating, note) => {
-    const updated = sessions.map(s => {
-      if (s.id === id) {
-        return { ...s, rating, note, rated: true };
+        const profile = profileRes.data;
+        const apps = appointmentsRes.data || [];
+        const reports = reportsRes.data || [];
+
+        setPatientProfile(profile);
+        setAppointments(apps);
+        setSessionReports(reports);
+
+        // 1) Preferred source: the relation included in the profile
+        if (profile.currentTherapist && profile.currentTherapist.name) {
+          setTherapistInfo({
+            id: profile.currentTherapist.id,
+            name: profile.currentTherapist.name,
+            speciality: profile.currentTherapist.approcheTherapeute || 'Psychologue',
+            profilePhotoUrl: profile.currentTherapist.profilePhotoUrl || null,
+          });
+        } else if (profile.currentTherapistid) {
+          // 2) Fallback: derive from an existing appointment
+          const appWithTherapist = apps.find(
+            (a) => a.therapistId === profile.currentTherapistid,
+          );
+          if (appWithTherapist && appWithTherapist.therapist?.user?.name) {
+            setTherapistInfo({
+              id: appWithTherapist.therapistId,
+              name: appWithTherapist.therapist.user.name,
+              speciality:
+                appWithTherapist.therapist.approcheTherapeute || 'Psychologue',
+            });
+          } else {
+            // 3) Last resort: fetch public profile by id
+            try {
+              const therapistRes = await publicApi.getTherapistProfile(
+                profile.currentTherapistid,
+              );
+              if (therapistRes.data) {
+                setTherapistInfo({
+                  id: profile.currentTherapistid,
+                  name:
+                    therapistRes.data.user?.name ||
+                    therapistRes.data.name ||
+                    null,
+                  speciality:
+                    therapistRes.data.approcheTherapeute || 'Psychologue',
+                });
+              }
+            } catch (_) {
+              /* leave therapistInfo null */
+            }
+          }
+        } else if (currentTherapist && currentTherapist.name) {
+          // 4) Pre-onboarding fallback (e.g. coming from Registration)
+          setTherapistInfo(currentTherapist);
+        }
+      } catch (err) {
+        setError(err.message || 'Erreur lors du chargement des données');
+      } finally {
+        setLoading(false);
       }
-      return s;
+    };
+    loadData();
+  }, [currentTherapist]);
+
+  // Fetch available slots when the selected date or therapist
+  // changes. The query string uses the local YYYY-MM-DD so the
+  // server-side timezone arithmetic returns the right day.
+  useEffect(() => {
+    if (!selectedDate || !therapistInfo?.id) {
+      setAvailableSlots([]);
+      return;
+    }
+
+    const fetchSlots = async () => {
+      setSlotsLoading(true);
+      try {
+        const dateStr = formatYmdLocal(selectedDate);
+        const res = await appointmentApi.getAvailableSlots(
+          therapistInfo.id,
+          dateStr,
+        );
+        setAvailableSlots(res.data || []);
+      } catch (err) {
+        setAvailableSlots([]);
+      } finally {
+        setSlotsLoading(false);
+      }
+    };
+    fetchSlots();
+  }, [selectedDate, therapistInfo?.id]);
+
+  const handleRateSession = async (appointmentId, rating, comment) => {
+    setRatingLoading(true);
+    try {
+      // Update the session report with rating
+      await appointmentApi.createSessionReport(appointmentId, {
+        rating,
+        comment,
+        isConfidential: false,
+        isAnonymous: false,
+        sessionNotes: '',
+        interventionsUsed: [],
+      });
+
+      // Refresh data
+      const reportsRes = await patientApi.getSessionReports();
+      setSessionReports(reportsRes.data || []);
+
+      setRatingFeedbackSelected(0);
+      setRatingFeedbackComment('');
+    } catch (err) {
+      console.error('Error submitting rating:', err);
+    } finally {
+      setRatingLoading(false);
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Notifications state and helpers
+  // -----------------------------------------------------------------
+  // The patient receives a notification whenever their appointment
+  // is refused (scheduled → cancelled) or cancelled by the therapist
+  // (confirmed → cancelled). The backend stores the contextual copy
+  // (date, time, therapist name) directly on the notification row, so
+  // the client just has to display it.
+  const [notifications, setNotifications] = useState([]);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const refreshUnreadCount = useCallback(async () => {
+    try {
+      const res = await notificationApi.getUnreadCount();
+      setUnreadCount(res?.data?.count ?? 0);
+    } catch (err) {
+      // Non-fatal: silently keep the previous count.
+      console.error('Failed to fetch unread count:', err);
+    }
+  }, []);
+
+  const loadNotifications = useCallback(async () => {
+    setNotifLoading(true);
+    try {
+      const res = await notificationApi.getAll({ page: 1, limit: 50 });
+      setNotifications(res?.data || []);
+    } catch (err) {
+      console.error('Failed to load notifications:', err);
+    } finally {
+      setNotifLoading(false);
+    }
+  }, []);
+
+  // Poll the unread count on mount and every 30s so refus/annulation
+  // notifications emitted by the therapist appear without a refresh.
+  useEffect(() => {
+    refreshUnreadCount();
+    const id = setInterval(refreshUnreadCount, 30000);
+    return () => clearInterval(id);
+  }, [refreshUnreadCount]);
+
+  // When the user opens the Notifications tab, do a full fetch and
+  // mark any newly-loaded entries as read.
+  useEffect(() => {
+    if (activeTab === 'notifications') {
+      loadNotifications().then(() => {
+        // Optimistically mark everything as read on the server, then
+        // refresh the badge so it goes back to 0.
+        notificationApi
+          .markAllAsRead()
+          .then(() => refreshUnreadCount())
+          .catch((err) => console.error('Failed to mark all as read:', err));
+      });
+    }
+  }, [activeTab, loadNotifications, refreshUnreadCount]);
+
+  const handleMarkAsRead = async (id) => {
+    // Optimistic update so the card visually fades immediately.
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)),
+    );
+    try {
+      await notificationApi.markAsRead(id);
+      refreshUnreadCount();
+    } catch (err) {
+      console.error('Failed to mark notification as read:', err);
+    }
+  };
+
+  const handleDeleteNotification = async (id) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    try {
+      await notificationApi.delete(id);
+      refreshUnreadCount();
+    } catch (err) {
+      console.error('Failed to delete notification:', err);
+    }
+  };
+
+  // Visual config for each notification type so refus / cancellation
+  // are easy to tell apart at a glance.
+  const notificationStyle = {
+    appointment_refused: {
+      icon: XCircle,
+      ring: 'border-orange-500/30',
+      bg: 'bg-orange-500/5',
+      iconBg: 'bg-orange-500/10 text-orange-600',
+    },
+    appointment_cancelled: {
+      icon: XCircle,
+      ring: 'border-red-500/30',
+      bg: 'bg-red-500/5',
+      iconBg: 'bg-red-500/10 text-red-600',
+    },
+    appointment_confirmed: {
+      icon: CheckCircle2,
+      ring: 'border-green-500/30',
+      bg: 'bg-green-500/5',
+      iconBg: 'bg-green-500/10 text-green-600',
+    },
+    appointment_completed: {
+      icon: CheckCircle2,
+      ring: 'border-blue-500/30',
+      bg: 'bg-blue-500/5',
+      iconBg: 'bg-blue-500/10 text-blue-600',
+    },
+    appointment_no_show: {
+      icon: AlertTriangle,
+      ring: 'border-gray-500/30',
+      bg: 'bg-gray-500/5',
+      iconBg: 'bg-gray-500/10 text-gray-600',
+    },
+  };
+
+  const getNotificationStyle = (type) =>
+    notificationStyle[type] || {
+      icon: Bell,
+      ring: 'border-primary/20',
+      bg: 'bg-primary/5',
+      iconBg: 'bg-primary/10 text-primary',
+    };
+
+  // Human-friendly relative time, used in the notification card.
+  const formatRelativeTime = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const diffMs = Date.now() - d.getTime();
+    const min = Math.round(diffMs / 60000);
+    if (min < 1) return "à l'instant";
+    if (min < 60) return `il y a ${min} min`;
+    const h = Math.round(min / 60);
+    if (h < 24) return `il y a ${h} h`;
+    const days = Math.round(h / 24);
+    if (days < 7) return `il y a ${days} j`;
+    return d.toLocaleDateString('fr-FR', {
+      day: 'numeric',
+      month: 'long',
     });
-    setSessions(updated);
-    localStorage.setItem('app_sessions', JSON.stringify(updated));
-    if (selectedSession && selectedSession.id === id) {
-      setSelectedSession({ ...selectedSession, rating, note, rated: true });
-    }
   };
 
-  const defaultTherapist = {
-    name: "Dr. Amine B.",
-    speciality: "TCC",
-    wilaya: "16 - Alger",
-    rating: 4.8,
-    image: "A"
-  };
+  const therapist = useMemo(() => {
+    // The therapist name is now sourced exclusively from the backend
+    // relation `Patient.currentTherapist.user.name`. If the patient
+    // does not yet have a therapist, `therapist` is null and the UI
+    // renders a dedicated empty-state CTA instead of a fake name.
+    if (therapistInfo && therapistInfo.name) return therapistInfo;
+    if (currentTherapist && currentTherapist.name) return currentTherapist;
+    return null;
+  }, [therapistInfo, currentTherapist]);
 
-  const therapist = currentTherapist || defaultTherapist;
+  // Safe-to-render name for the assigned therapist. Never null.
+  // Used in copy where the therapist is mentioned (toast, modal copy...).
+  // When no therapist is assigned, we fall back to a neutral phrase
+  // so the UI never crashes on a missing relation.
+  const therapistDisplayName = therapist?.name || 'votre thérapeute';
 
-  const [appointments, setAppointments] = useState([
-    { 
-      id: 1, 
-      title: 'Séance d\'évaluation', 
-      dateText: 'Mardi, 26 Mai 2026 à 14:30', 
-      type: 'Téléconsultation', 
-      status: 'Confirmé',
-      dayNum: '26',
-      monthShort: 'MAI'
-    }
-  ]);
+  const activeAppointments = useMemo(() => {
+    return appointments.filter(a => 
+      (a.status === 'scheduled' || a.status === 'confirmed') && 
+      new Date(a.scheduledAt) > new Date()
+    ).sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+  }, [appointments]);
 
-  const patientUser = {
-    name: "Walid B.",
-    email: "walid@example.com",
-    role: "PATIENT"
-  };
-
-  const activeSchedule = useMemo(() => {
-    return getTherapistSchedule(therapist.name);
-  }, [therapist.name]);
-
-  const availableSlots = useMemo(() => {
-    const slots = [];
-    const [startHard, startMin] = activeSchedule.start.split(":").map(Number);
-    const [endHard, endMin] = activeSchedule.end.split(":").map(Number);
-    
-    let currentMin = startHard * 60 + startMin;
-    const endTotalMin = endHard * 60 + endMin;
-    
-    while (currentMin + activeSchedule.slotDuration <= endTotalMin) {
-      const h = Math.floor(currentMin / 60);
-      const m = currentMin % 60;
-      const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-      slots.push(timeStr);
-      currentMin += activeSchedule.slotDuration;
-    }
-    return slots;
-  }, [activeSchedule]);
+  const pastAppointments = useMemo(() => {
+    return appointments.filter(a => 
+      a.status === 'completed' || a.status === 'cancelled' || a.status === 'no_show' ||
+      new Date(a.scheduledAt) < new Date()
+    ).sort((a, b) => new Date(b.scheduledAt) - new Date(a.scheduledAt));
+  }, [appointments]);
 
   const handlePrevMonth = () => {
     const today = new Date();
     if (currentMonth === today.getMonth() && currentYear === today.getFullYear()) {
-      return; // Can't go to past month
+      return;
     }
     if (currentMonth === 0) {
       setCurrentMonth(11);
@@ -298,8 +494,8 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
 
   const { blanks, days } = useMemo(() => {
     const d1 = new Date(currentYear, currentMonth, 1);
-    let startingDayIndex = d1.getDay(); // 0 is Sunday, 1 is Monday ...
-    startingDayIndex = (startingDayIndex + 6) % 7; // Convert to Monday=0 index
+    let startingDayIndex = d1.getDay();
+    startingDayIndex = (startingDayIndex + 6) % 7;
     
     const numDays = new Date(currentYear, currentMonth + 1, 0).getDate();
     
@@ -309,29 +505,85 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
     };
   }, [currentYear, currentMonth]);
 
-  const handleCompleteBooking = () => {
-    if (!selectedDate || !selectedTimeSlot) return;
-    const monthsShort = ["JAN", "FEV", "MAR", "AVR", "MAI", "JUN", "JUL", "AOU", "SEP", "OCT", "NOV", "DEC"];
-    const daysWeekStr = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
-    const bookingDateText = `${daysWeekStr[selectedDate.getDay()]} ${selectedDate.getDate()} ${MONTHS_FR[selectedDate.getMonth()]} ${selectedDate.getFullYear()} à ${selectedTimeSlot}`;
-    
-    const newAppointment = {
-      id: Date.now(),
-      title: 'Séance de suivi',
-      dateText: bookingDateText,
-      type: consultationType === 'cabinet' ? 'Cabinet' : consultationType === 'phone' ? 'Appel vocal' : 'Téléconsultation',
-      status: 'Confirmé',
-      dayNum: String(selectedDate.getDate()).padStart(2, '0'),
-      monthShort: monthsShort[selectedDate.getMonth()]
-    };
+  // Check if a date has available slots
+  const dateHasSlots = useCallback((year, month, day) => {
+    // We don't know in advance, so we just check if it's a future date
+    return !isPastDate(year, month, day);
+  }, []);
 
-    setAppointments([newAppointment, ...appointments]);
-    setBookingStep(2);
-    setExpeditionNotification(true);
-    setTimeout(() => {
-      setExpeditionNotification(false);
-    }, 6000);
+  const handleCompleteBooking = async () => {
+    if (!selectedDate || !selectedTimeSlot || !selectedSlotId || !therapistInfo?.id) {
+      setBookingError('Veuillez sélectionner une date et un créneau.');
+      return;
+    }
+
+    setBookingLoading(true);
+    setBookingError('');
+
+    try {
+      // Use the slot itself as the source of truth for the start
+      // time. We still need to send `scheduledAt` in the request
+      // body (the backend validates it against the slot), so we
+      // forward `slot.startAt` verbatim — no client-side
+      // reconstruction that could disagree with the server.
+      const slot = availableSlots.find((s) => s.id === selectedSlotId);
+      if (!slot) {
+        throw new Error('Créneau introuvable. Veuillez le re-sélectionner.');
+      }
+      const scheduledAtIso = new Date(slot.startAt).toISOString();
+
+      const response = await appointmentApi.create({
+        therapistId: therapistInfo.id,
+        scheduledAt: scheduledAtIso,
+        durationMinutes: 60,
+        type:
+          consultationType === 'cabinet'
+            ? 'in_person'
+            : consultationType === 'phone'
+              ? 'phone'
+              : 'video',
+        therapistAvailableTimeSlotId: selectedSlotId,
+      });
+
+      setLastBooking(response.data);
+      setAppointments((prev) => [response.data, ...prev]);
+      setBookingStep(2);
+      setExpeditionNotification(true);
+      setTimeout(() => {
+        setExpeditionNotification(false);
+      }, 6000);
+    } catch (err) {
+      setBookingError(err.message || 'Erreur lors de la réservation');
+    } finally {
+      setBookingLoading(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-bg-main text-text-main font-sans flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-primary mx-auto mb-4" />
+          <p className="text-text-muted font-medium">Chargement de votre espace...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-bg-main text-text-main font-sans flex items-center justify-center p-6">
+        <div className="bg-card-bg border border-border-color rounded-3xl p-8 max-w-md text-center shadow-xl">
+          <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h3 className="text-lg font-bold mb-2">Erreur de chargement</h3>
+          <p className="text-text-muted text-sm mb-6">{error}</p>
+          <button onClick={() => window.location.reload()} className="px-6 py-3 bg-primary text-white rounded-xl font-bold">
+            Réessayer
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-bg-main text-text-main font-sans selection:bg-primary-light">
@@ -353,7 +605,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                   Expédition confirmée !
                 </p>
                 <p className="text-[11px] text-text-muted leading-relaxed font-semibold">
-                  Votre demande de session a bien été expédiée avec succès à votre thérapeute {therapist.name}.
+                  Votre demande de session a bien été expédiée avec succès à {therapistDisplayName}.
                 </p>
               </div>
             </div>
@@ -365,7 +617,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
         onLogin={() => onNavigateToPage('LOGIN')} 
         onAbout={() => onNavigateToPage('ABOUT')}
         onHome={() => onNavigateToPage('REGISTRATION')}
-        user={patientUser}
+        user={user ? { name: user.name || 'Patient', email: user.email || '', role: 'PATIENT' } : (patientProfile ? { name: patientProfile.user?.name || 'Patient', email: patientProfile.user?.email || '', role: 'PATIENT' } : null)}
         onLogout={() => { removeToken(); onNavigateToPage('LANDING'); }}
         onNavigateToPage={onNavigateToPage}
       />
@@ -384,7 +636,6 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
         <AnimatePresence>
           {isSidebarOpen && (
             <>
-              {/* Mobile Overlay */}
               <motion.div 
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -399,15 +650,27 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                 className="fixed left-6 top-32 z-[70] w-[280px] lg:w-[320px] h-[calc(100vh-160px)] max-h-[720px] bg-card-bg border border-border-color rounded-3xl p-6 overflow-y-auto shadow-2xl"
               >
                 <div className="space-y-6">
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="w-12 h-12 bg-primary-light rounded-xl flex items-center justify-center text-primary font-black text-xl shadow-inner border-2 border-card-bg transition-colors">
-                      {therapist.name.charAt(4)}
+                  {therapist ? (
+                    <div className="flex items-center gap-3 mb-6">
+                      <div className="w-12 h-12 bg-primary-light rounded-xl flex items-center justify-center text-primary font-black text-xl shadow-inner border-2 border-card-bg transition-colors">
+                        {therapist.name ? therapist.name.charAt(0).toUpperCase() : 'T'}
+                      </div>
+                      <div>
+                        <h2 className="text-lg font-bold">{therapist.name}</h2>
+                        <p className="text-primary text-[10px] font-bold uppercase tracking-wider">{therapist.speciality || therapist.approcheTherapeute || 'Psychologue'}</p>
+                      </div>
                     </div>
-                    <div>
-                      <h2 className="text-lg font-bold">{therapist.name}</h2>
-                      <p className="text-primary text-[10px] font-bold uppercase tracking-wider">{therapist.speciality}</p>
+                  ) : (
+                    <div className="flex items-center gap-3 mb-6 p-3 bg-bg-main border border-dashed border-border-color rounded-2xl">
+                      <div className="w-12 h-12 bg-primary-light rounded-xl flex items-center justify-center text-primary font-black text-xl shadow-inner border-2 border-card-bg">
+                        T
+                      </div>
+                      <div>
+                        <h2 className="text-sm font-bold text-text-main">Aucun thérapeute</h2>
+                        <p className="text-primary text-[10px] font-bold uppercase tracking-wider">Choisir un praticien</p>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <nav className="space-y-2">
                     <button 
@@ -428,7 +691,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                         <span className="font-bold">Rendez-vous</span>
                       </div>
                     </button>
-                    <button 
+                    <button
                       onClick={() => { setActiveTab('history'); if (window.innerWidth < 1024) setIsSidebarOpen(false); }}
                       className={`w-full flex items-center justify-between p-4 rounded-xl transition-all ${activeTab === 'history' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'hover:bg-bg-main text-text-muted'}`}
                     >
@@ -437,20 +700,43 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                         <span className="font-bold">Historique</span>
                       </div>
                     </button>
+                    <button
+                      onClick={() => { setActiveTab('notifications'); if (window.innerWidth < 1024) setIsSidebarOpen(false); }}
+                      className={`w-full flex items-center justify-between p-4 rounded-xl transition-all ${activeTab === 'notifications' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'hover:bg-bg-main text-text-muted'}`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Bell size={18} />
+                        <span className="font-bold">Notifications</span>
+                      </div>
+                      {unreadCount > 0 && (
+                        <span
+                          data-testid="unread-badge"
+                          className={`min-w-[22px] h-[22px] px-1.5 rounded-full text-[10px] font-black flex items-center justify-center ${
+                            activeTab === 'notifications'
+                              ? 'bg-white text-primary'
+                              : 'bg-red-500 text-white animate-pulse'
+                          }`}
+                        >
+                          {unreadCount > 99 ? '99+' : unreadCount}
+                        </span>
+                      )}
+                    </button>
                   </nav>
 
-                  <div className="mt-8 pt-6 border-t border-border-color">
-                    <button 
-                      onClick={() => setShowChangeTherapistConfirm(true)}
-                      className="w-full flex items-center justify-center gap-2 p-4 text-primary font-bold hover:bg-primary-light rounded-xl transition-all group"
-                    >
-                      <RefreshCw size={18} className="group-hover:rotate-180 transition-transform duration-500" />
-                      Changer de thérapeute
-                    </button>
-                    <p className="text-[10px] text-text-muted text-center mt-2 font-medium italic">
-                      Cette action vous dissociera du praticien actuel.
-                    </p>
-                  </div>
+                  {patientProfile?.currentTherapistid && (
+                    <div className="mt-8 pt-6 border-t border-border-color">
+                      <button 
+                        onClick={() => setShowChangeTherapistConfirm(true)}
+                        className="w-full flex items-center justify-center gap-2 p-4 text-primary font-bold hover:bg-primary-light rounded-xl transition-all group"
+                      >
+                        <RefreshCw size={18} className="group-hover:rotate-180 transition-transform duration-500" />
+                        Changer de thérapeute
+                      </button>
+                      <p className="text-[10px] text-text-muted text-center mt-2 font-medium italic">
+                        Cette action vous dissociera du praticien actuel.
+                      </p>
+                    </div>
+                  )}
 
                   <div className="p-6 bg-primary/5 border border-primary/10 rounded-2xl">
                     <h4 className="font-bold flex items-center gap-2 mb-3 text-sm">
@@ -472,7 +758,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
             <AnimatePresence mode="wait">
               {activeTab === 'chat' && (
                 <div className="flex-1 flex flex-col min-h-0">
-                  <ChatWidget therapist={therapist} />
+                  <ChatWidget therapist={therapist || undefined} />
                 </div>
               )}
 
@@ -494,21 +780,39 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                     </div>
 
                     <div className="space-y-3">
-                      {appointments.map((appt) => (
-                        <div key={appt.id} className="p-5 bg-primary/5 border border-primary/20 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all hover:bg-primary/[0.08]">
-                          <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 bg-card-bg rounded-xl shadow-sm flex flex-col items-center justify-center border border-primary/10">
-                              <span className="text-[10px] font-bold text-primary uppercase">{appt.monthShort}</span>
-                              <span className="text-lg font-black text-primary -mt-1">{appt.dayNum}</span>
-                            </div>
-                            <div>
-                              <p className="font-bold text-text-main">{appt.title}</p>
-                              <p className="text-sm font-medium text-text-muted">{appt.dateText} • {therapist.name} ({appt.type})</p>
-                            </div>
-                          </div>
-                          <div className="t-badge t-badge-accent shadow-sm">{appt.status}</div>
+                      {activeAppointments.length === 0 ? (
+                        <div className="p-6 text-center bg-bg-main border border-dashed border-border-color rounded-2xl">
+                          <p className="text-text-muted font-medium">Aucun rendez-vous à venir</p>
                         </div>
-                      ))}
+                      ) : (
+                        activeAppointments.map((appt) => {
+                          const apptDate = new Date(appt.scheduledAt);
+                          const monthsShort = ["JAN", "FEV", "MAR", "AVR", "MAI", "JUN", "JUL", "AOU", "SEP", "OCT", "NOV", "DEC"];
+                          return (
+                            <div key={appt.id} className="p-5 bg-primary/5 border border-primary/20 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all hover:bg-primary/[0.08]">
+                              <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 bg-card-bg rounded-xl shadow-sm flex flex-col items-center justify-center border border-primary/10">
+                                  <span className="text-[10px] font-bold text-primary uppercase">{monthsShort[apptDate.getUTCMonth()]}</span>
+                                  <span className="text-lg font-black text-primary -mt-1">{String(apptDate.getUTCDate()).padStart(2, '0')}</span>
+                                </div>
+                                <div>
+                                  <p className="font-bold text-text-main">Séance de suivi</p>
+                                  <p className="text-sm font-medium text-text-muted">
+                                    {formatDateFrUtc(apptDate)} à {formatTime(appt.scheduledAt)} 
+                                    {appt.therapist?.user?.name ? ` • ${appt.therapist.user.name}` : ''}
+                                    {appt.type ? ` (${appt.type === 'video' ? 'Téléconsultation' : appt.type === 'in_person' ? 'Cabinet' : 'Téléphone'})` : ''}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className={`text-[10px] font-bold px-3 py-1.5 rounded-lg border ${getStatusColor(appt.status)}`}>
+                                  {getStatusLabel(appt.status)}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
                     </div>
                   </div>
 
@@ -517,22 +821,62 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                       <Clock size={18} className="text-primary" /> Réserver une nouvelle séance
                     </h4>
 
-                    {bookingStep === 0 && (
-                      <div className="space-y-6">
-                        {/* Therapist exclusive availability alert box */}
-                        <div className="p-4 bg-primary/5 border border-primary/20 rounded-2xl flex items-start gap-3.5 mb-2">
-                          <div className="mt-0.5 text-primary shrink-0">
-                            <Calendar size={18} />
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-[10px] font-black text-primary uppercase tracking-widest leading-none">Disponibilité du Thérapeute</p>
-                            <p className="text-xs text-text-main font-semibold leading-relaxed">
-                              {therapist.name} est disponible uniquement le <span className="text-primary font-bold">{activeSchedule.daysText}</span> entre <span className="text-primary font-bold">{activeSchedule.hoursText}</span>.
-                            </p>
-                          </div>
-                        </div>
+                    {bookingError && (
+                      <div className="p-4 mb-4 bg-red-500/10 border border-red-500/30 rounded-2xl flex items-center gap-3">
+                        <AlertTriangle className="w-5 h-5 text-red-500 shrink-0" />
+                        <p className="text-red-600 font-medium text-sm">{bookingError}</p>
+                      </div>
+                    )}
 
-                        {/* Core scheduler grid */}
+                    {bookingStep === 0 && !therapist && (
+                      <div className="p-8 md:p-12 bg-card-bg border-2 border-dashed border-border-color rounded-3xl text-center space-y-4 shadow-lg">
+                        <div className="w-16 h-16 bg-amber-500/10 text-amber-600 rounded-full flex items-center justify-center mx-auto">
+                          <AlertTriangle size={28} />
+                        </div>
+                        <div className="space-y-2">
+                          <h5 className="font-extrabold text-lg text-text-main">Choisissez d'abord un thérapeute</h5>
+                          <p className="text-xs text-text-muted leading-relaxed max-w-md mx-auto">
+                            La réservation d'une séance nécessite qu'un praticien vous soit assigné.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onNavigateToPage('REGISTRATION', { mode: 'RESULTS' })}
+                          className="t-btn-primary inline-flex items-center gap-2 px-6 py-3 rounded-xl text-xs font-extrabold text-white shadow-lg shadow-primary/20 hover:scale-[1.02] transition-all"
+                        >
+                          Choisir un praticien <ChevronRight size={14} />
+                        </button>
+                      </div>
+                    )}
+
+                    {bookingStep === 0 && therapist && (
+                      <div className="space-y-6">
+                        {therapist ? (
+                          <div className="p-4 bg-primary/5 border border-primary/20 rounded-2xl flex items-start gap-3.5 mb-2">
+                            <div className="mt-0.5 text-primary shrink-0">
+                              <Calendar size={18} />
+                            </div>
+                            <div className="space-y-1">
+                              <p className="text-[10px] font-black text-primary uppercase tracking-widest leading-none">Réservation</p>
+                              <p className="text-xs text-text-main font-semibold leading-relaxed">
+                                Sélectionnez une date, un créneau horaire et le mode de consultation pour réserver une séance avec <span className="text-primary font-bold">{therapist.name}</span>.
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-4 bg-amber-500/5 border border-amber-500/20 rounded-2xl flex items-start gap-3.5 mb-2">
+                            <div className="mt-0.5 text-amber-600 shrink-0">
+                              <AlertTriangle size={18} />
+                            </div>
+                            <div className="space-y-1">
+                              <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest leading-none">Aucun thérapeute</p>
+                              <p className="text-xs text-text-main font-semibold leading-relaxed">
+                                Pour réserver une séance, vous devez d'abord choisir un praticien.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
                         <div className="grid lg:grid-cols-12 gap-8 items-start">
                           <div className="lg:col-span-8 space-y-8">
                             
@@ -543,7 +887,6 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                               </label>
                               <div className="p-5 bg-bg-main border-2 border-border-color rounded-2xl">
                                 
-                                {/* Calendar Month Control Navigation */}
                                 <div className="flex items-center justify-between mb-5">
                                   <button
                                     type="button"
@@ -565,21 +908,19 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                                   </button>
                                 </div>
 
-                                {/* Calendar Weekday headers */}
                                 <div className="grid grid-cols-7 gap-1 md:gap-2 text-center text-[10px] font-black uppercase text-text-muted tracking-widest mb-3 border-b border-border-color/10 pb-2">
                                   {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map(dayHeader => (
                                     <div key={dayHeader} className="py-1">{dayHeader}</div>
                                   ))}
                                 </div>
 
-                                {/* Grid cells */}
                                 <div className="grid grid-cols-7 gap-1.5 md:gap-2">
                                   {blanks.map((_, i) => (
                                     <div key={`blank-${i}`} className="aspect-square" />
                                   ))}
                                   {days.map(day => {
                                     const isSelected = selectedDate && selectedDate.getDate() === day && selectedDate.getMonth() === currentMonth && selectedDate.getFullYear() === currentYear;
-                                    const isSelectable = isDateSelectable(currentYear, currentMonth, day, activeSchedule);
+                                    const isSelectable = dateHasSlots(currentYear, currentMonth, day);
                                     return (
                                       <button
                                         key={day}
@@ -588,7 +929,8 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                                         onClick={() => {
                                           const date = new Date(currentYear, currentMonth, day);
                                           setSelectedDate(date);
-                                          setSelectedTimeSlot(null); // Reset timeslot choice
+                                          setSelectedTimeSlot(null);
+                                          setSelectedSlotId(null);
                                         }}
                                         className={`
                                           aspect-square rounded-xl text-xs font-black transition-all flex items-center justify-center cursor-pointer
@@ -606,7 +948,6 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                                   })}
                                 </div>
 
-                                {/* Legend markers */}
                                 <div className="mt-5 pt-4 border-t border-border-color/40 flex flex-wrap gap-4 text-[10px] font-bold uppercase tracking-wider text-text-muted">
                                   <div className="flex items-center gap-1.5">
                                     <div className="w-3 h-3 rounded bg-primary/15 border border-primary/25" />
@@ -624,7 +965,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                               </div>
                             </div>
 
-                            {/* Time Slot Generation dependent on selected Date */}
+                            {/* Time Slot Selection */}
                             <div>
                               <label className="block text-[11px] font-black uppercase tracking-widest text-primary mb-3">
                                 2. Choisir un créneau horaire
@@ -632,17 +973,31 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                               {!selectedDate ? (
                                 <div className="p-6 bg-bg-main border-2 border-dashed border-border-color rounded-2xl flex flex-col items-center justify-center text-center text-text-muted space-y-2">
                                   <Clock size={24} className="opacity-40" />
-                                  <p className="text-xs font-bold uppercase tracking-wider">Veuillez d'abord sélectionner une date valide dans l'agenda</p>
+                                  <p className="text-xs font-bold uppercase tracking-wider">Veuillez d'abord sélectionner une date valide</p>
+                                </div>
+                              ) : slotsLoading ? (
+                                <div className="p-6 bg-bg-main border-2 border-dashed border-border-color rounded-2xl flex flex-col items-center justify-center text-center text-text-muted space-y-2">
+                                  <Loader2 size={24} className="animate-spin opacity-40" />
+                                  <p className="text-xs font-bold uppercase tracking-wider">Chargement des créneaux...</p>
+                                </div>
+                              ) : availableSlots.length === 0 ? (
+                                <div className="p-6 bg-bg-main border-2 border-dashed border-border-color rounded-2xl flex flex-col items-center justify-center text-center text-text-muted space-y-2">
+                                  <Clock size={24} className="opacity-40" />
+                                  <p className="text-xs font-bold uppercase tracking-wider">Aucun créneau disponible pour cette date</p>
                                 </div>
                               ) : (
                                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
                                   {availableSlots.map(slot => {
-                                    const isSlotSelected = selectedTimeSlot === slot;
+                                    const timeStr = formatTime(slot.startAt);
+                                    const isSlotSelected = selectedSlotId === slot.id;
                                     return (
                                       <button
-                                        key={slot}
+                                        key={slot.id}
                                         type="button"
-                                        onClick={() => setSelectedTimeSlot(slot)}
+                                        onClick={() => {
+                                          setSelectedTimeSlot(timeStr);
+                                          setSelectedSlotId(slot.id);
+                                        }}
                                         className={`
                                           py-3 px-2 text-center rounded-xl text-xs font-bold border transition-all cursor-pointer
                                           ${isSlotSelected 
@@ -651,7 +1006,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                                           }
                                         `}
                                       >
-                                        {slot}
+                                        {timeStr}
                                       </button>
                                     );
                                   })}
@@ -699,22 +1054,34 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                             </div>
                           </div>
 
-                          {/* Dynamic Side Summary - Sticky on desktop */}
+                          {/* Dynamic Side Summary */}
                           <div className="lg:col-span-4 lg:sticky lg:top-24 space-y-4">
                             <div className="t-card border border-border-color p-5 space-y-5 bg-card-bg shadow-lg rounded-2xl">
                               <h5 className="font-black text-[10px] uppercase text-text-muted tracking-widest border-b border-border-color/30 pb-3">
                                 Récapitulatif
                               </h5>
                               <div className="space-y-4">
-                                <div className="flex items-center gap-3 bg-primary-light/40 p-3 rounded-2xl border border-primary/10">
-                                  <div className="w-10 h-10 bg-primary text-white rounded-xl flex items-center justify-center font-black text-sm">
-                                    {therapist.name.charAt(4)}
+                                {therapist ? (
+                                  <div className="flex items-center gap-3 bg-primary-light/40 p-3 rounded-2xl border border-primary/10">
+                                    <div className="w-10 h-10 bg-primary text-white rounded-xl flex items-center justify-center font-black text-sm">
+                                      {therapist.name ? therapist.name.charAt(0).toUpperCase() : 'T'}
+                                    </div>
+                                    <div>
+                                      <p className="font-black text-xs text-text-main">{therapist.name}</p>
+                                      <p className="text-[9px] font-bold text-primary uppercase tracking-wider">{therapist.speciality || 'Psychologue'}</p>
+                                    </div>
                                   </div>
-                                  <div>
-                                    <p className="font-black text-xs text-text-main">{therapist.name}</p>
-                                    <p className="text-[9px] font-bold text-primary uppercase tracking-wider">{therapist.speciality}</p>
+                                ) : (
+                                  <div className="flex items-center gap-3 bg-bg-main p-3 rounded-2xl border border-dashed border-border-color">
+                                    <div className="w-10 h-10 bg-text-muted/20 text-text-muted rounded-xl flex items-center justify-center font-black text-sm">
+                                      T
+                                    </div>
+                                    <div>
+                                      <p className="font-black text-xs text-text-main">Aucun praticien</p>
+                                      <p className="text-[9px] font-bold text-text-muted uppercase tracking-wider">Choisissez un thérapeute</p>
+                                    </div>
                                   </div>
-                                </div>
+                                )}
 
                                 <div className="space-y-3 pt-3">
                                   <div className="flex justify-between items-center text-xs">
@@ -742,7 +1109,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
 
                               <button
                                 type="button"
-                                disabled={!selectedDate || !selectedTimeSlot}
+                                disabled={!selectedDate || !selectedTimeSlot || !selectedSlotId}
                                 onClick={() => setBookingStep(1)}
                                 className="t-btn-primary w-full py-4 rounded-xl shadow-lg shadow-primary/20 hover:scale-[1.02] disabled:hover:scale-100 disabled:opacity-40 flex items-center justify-center gap-2 cursor-pointer font-bold transition-all text-xs text-white"
                               >
@@ -766,28 +1133,27 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                               Demande de session
                             </h5>
                             <p className="text-xs text-text-muted leading-relaxed">
-                              Vous êtes sur le point d'envoyer votre demande de session avec votre thérapeute pour la séance choisie.
+                              Vous êtes sur le point d'envoyer votre demande de session avec votre thérapeute.
                             </p>
                           </div>
 
-                          {/* Selected Info Summary Box */}
                           <div className="p-5 bg-primary/5 border border-primary/10 rounded-2xl text-left space-y-3 text-xs">
                             <div className="flex justify-between border-b border-border-color/30 pb-2">
                               <span className="text-text-muted font-bold">Thérapeute :</span>
-                              <span className="font-bold text-text-main">{therapist.name}</span>
+                              <span className="font-bold text-text-main">{therapist?.name || lastBooking.therapist?.user?.name || 'votre thérapeute'}</span>
                             </div>
                             <div className="flex justify-between border-b border-border-color/30 pb-2">
-                              <span className="text-text-muted font-bold">Date de la séance :</span>
+                              <span className="text-text-muted font-bold">Date :</span>
                               <span className="font-bold text-text-main">
                                 {selectedDate ? formatDateFr(selectedDate) : ''}
                               </span>
                             </div>
                             <div className="flex justify-between border-b border-border-color/30 pb-2">
-                              <span className="text-text-muted font-bold">Heure choisie :</span>
+                              <span className="text-text-muted font-bold">Heure :</span>
                               <span className="font-bold text-text-main">{selectedTimeSlot}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-text-muted font-bold">Mode de consultation :</span>
+                              <span className="text-text-muted font-bold">Mode :</span>
                               <span className="font-semibold text-text-main">
                                 {consultationType === 'cabinet' && '📍 En cabinet'}
                                 {consultationType === 'teleconsultation' && '💻 Téléconsultation'}
@@ -796,13 +1162,20 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                             </div>
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={handleCompleteBooking}
-                            className="t-btn-primary w-full py-4 rounded-xl shadow-lg shadow-primary/20 hover:scale-[1.02] flex items-center justify-center gap-2 cursor-pointer font-bold transition-all text-xs text-white"
-                          >
-                            Confirmer ma demande de session <Check size={14} />
-                          </button>
+                          {bookingLoading ? (
+                            <div className="flex items-center justify-center gap-2 py-4">
+                              <Loader2 size={20} className="animate-spin text-primary" />
+                              <span className="text-sm font-bold text-text-muted">Réservation en cours...</span>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={handleCompleteBooking}
+                              className="t-btn-primary w-full py-4 rounded-xl shadow-lg shadow-primary/20 hover:scale-[1.02] flex items-center justify-center gap-2 cursor-pointer font-bold transition-all text-xs text-white"
+                            >
+                              Confirmer ma demande de session <Check size={14} />
+                            </button>
+                          )}
                         </div>
 
                         <div className="text-center">
@@ -811,13 +1184,13 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                             onClick={() => setBookingStep(0)}
                             className="text-xs font-bold text-text-muted hover:text-primary transition-all inline-flex items-center gap-1 cursor-pointer"
                           >
-                            <ChevronLeft size={14} /> Retour à l'étape précédente
+                            <ChevronLeft size={14} /> Retour
                           </button>
                         </div>
                       </div>
                     )}
 
-                    {bookingStep === 2 && (
+                    {bookingStep === 2 && lastBooking && (
                       <div className="p-6 md:p-10 bg-primary/5 border border-primary/20 rounded-3xl flex flex-col items-center justify-center text-center space-y-6">
                         <div className="w-16 h-16 bg-primary text-white rounded-full flex items-center justify-center shadow-lg shadow-primary/30 animate-bounce">
                           <Check size={32} />
@@ -825,31 +1198,31 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                         <div className="space-y-2">
                           <h4 className="text-xl font-extrabold text-text-main">Demande de session expédiée !</h4>
                           <p className="text-xs text-text-muted max-w-md font-medium leading-relaxed">
-                            Votre demande de session a bien été expédiée. Votre praticien {therapist.name} de votre rendez-vous a été notifié.
+                            Votre demande de session a bien été expédiée. Votre praticien a été notifié.
                           </p>
                         </div>
 
                         <div className="p-4 bg-card-bg border border-border-color rounded-2xl w-full max-w-sm text-left space-y-3 shadow-sm text-xs">
                           <div className="flex justify-between border-b border-border-color/40 pb-2">
                             <span className="text-text-muted font-bold">Thérapeute :</span>
-                            <span className="font-bold text-text-main">{therapist.name}</span>
+                            <span className="font-bold text-text-main">{lastBooking.therapist?.user?.name || therapist?.name || 'votre th\u00e9rapeute'}</span>
                           </div>
                           <div className="flex justify-between border-b border-border-color/40 pb-2">
                             <span className="text-text-muted font-bold">Date & Heure :</span>
-                            <span className="font-bold text-primary text-right">{selectedDate && formatDateFr(selectedDate)} à {selectedTimeSlot}</span>
+                            <span className="font-bold text-primary text-right">{formatDateFrUtc(new Date(lastBooking.scheduledAt))} à {formatTime(lastBooking.scheduledAt)}</span>
                           </div>
                           <div className="flex justify-between border-b border-border-color/40 pb-2">
                             <span className="text-text-muted font-bold">Mode :</span>
                             <span className="font-bold text-text-main text-right">
-                              {consultationType === 'cabinet' && '📍 En cabinet'}
-                              {consultationType === 'teleconsultation' && '💻 Téléconsultation'}
-                              {consultationType === 'phone' && '📞 Appel vocal'}
+                              {lastBooking.type === 'video' && '💻 Téléconsultation'}
+                              {lastBooking.type === 'in_person' && '📍 En cabinet'}
+                              {lastBooking.type === 'phone' && '📞 Appel vocal'}
                             </span>
                           </div>
                           <div className="flex justify-between pt-0.5">
                             <span className="text-text-muted font-bold">ID Session :</span>
                             <span className="font-mono font-bold text-[10px] uppercase tracking-wider text-text-muted">
-                              SESS-{Math.floor(1000 + Math.random() * 9000)}
+                              {lastBooking.id ? lastBooking.id.substring(0, 8).toUpperCase() : 'N/A'}
                             </span>
                           </div>
                         </div>
@@ -861,6 +1234,8 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                               setBookingStep(0);
                               setSelectedDate(null);
                               setSelectedTimeSlot(null);
+                              setSelectedSlotId(null);
+                              setLastBooking(null);
                             }}
                             className="flex-1 py-3 px-4 text-xs font-bold border border-border-color rounded-xl hover:bg-bg-main transition-all cursor-pointer text-text-main"
                           >
@@ -899,50 +1274,67 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                       </div>
 
                       <div className="grid gap-6">
-                        {sessions.map((session) => (
-                          <div 
-                            key={session.id} 
-                            onClick={() => setSelectedSession(session)}
-                            className={`t-card border-l-4 transition-all duration-300 hover:translate-x-2 cursor-pointer group ${
-                              session.rated 
-                                ? 'border-l-primary hover:border-primary/50' 
-                                : 'border-l-amber-500 bg-amber-500/5 hover:bg-amber-500/10 border-amber-500'
-                            }`}
-                          >
-                            <div className="flex flex-col md:flex-row justify-between gap-4">
-                              <div className="space-y-2">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-sm font-bold text-primary">{session.date}</span>
-                                  <span className="text-xs text-text-muted leading-none px-2 py-1 bg-bg-main rounded-md border border-border-color">{session.duration}</span>
-                                  {!session.rated && (
-                                    <span className="text-[10px] uppercase tracking-widest font-extrabold bg-amber-500 text-white px-2 py-0.5 rounded-full animate-pulse">À évaluer</span>
-                                  )}
-                                </div>
-                                {session.rated ? (
-                                  <p className="text-sm text-text-muted italic">"{session.note || 'Aucun commentaire laissé.'}"</p>
-                                ) : (
-                                  <p className="text-xs text-amber-700 font-bold flex items-center gap-1">
-                                    <Star size={12} className="fill-current animate-spin" style={{ animationDuration: '3s' }} /> Évaluez cette séance pour finaliser votre historique
+                        {/* Past appointments as history items */}
+                        {pastAppointments.map((appt) => {
+                          const apptDate = new Date(appt.scheduledAt);
+                          // Find matching session report for this appointment
+                          const report = sessionReports.find(r => r.appointmentId === appt.id);
+                          const hasRating = report?.rating > 0 || appt.appointmentOutcome?.rating > 0;
+                          const apptRating = report?.rating || appt.appointmentOutcome?.rating || 0;
+                          
+                          return (
+                            <div 
+                              key={appt.id} 
+                              onClick={() => setSelectedSession({ ...appt, report })}
+                              className={`t-card border-l-4 transition-all duration-300 hover:translate-x-2 cursor-pointer group ${
+                                hasRating 
+                                  ? 'border-l-primary hover:border-primary/50' 
+                                  : appt.status === 'completed'
+                                    ? 'border-l-amber-500 bg-amber-500/5 hover:bg-amber-500/10 border-amber-500'
+                                    : 'border-l-gray-400'
+                              }`}
+                            >
+                              <div className="flex flex-col md:flex-row justify-between gap-4">
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-bold text-primary">{formatDateFrUtc(apptDate)} à {formatTime(appt.scheduledAt)}</span>
+                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border ${getStatusColor(appt.status)}`}>
+                                      {getStatusLabel(appt.status)}
+                                    </span>
+                                    {appt.status === 'completed' && !hasRating && (
+                                      <span className="text-[10px] uppercase tracking-widest font-extrabold bg-amber-500 text-white px-2 py-0.5 rounded-full animate-pulse">À évaluer</span>
+                                    )}
+                                  </div>
+                                  <p className="text-sm text-text-muted">
+                                    {appt.therapist?.user?.name || 'Thérapeute'} • {appt.durationMinutes || 60} min
                                   </p>
-                                )}
-                              </div>
-                              <div className="flex flex-col items-end gap-2 justify-between">
-                                <div className="flex gap-1 text-yellow-500">
-                                  {session.rated ? (
-                                    [...Array(5)].map((_, i) => (
-                                      <Star key={i} size={14} className={i < session.rating ? 'fill-current' : 'opacity-20'} />
-                                    ))
-                                  ) : (
-                                    <span className="text-[11px] font-bold text-amber-600 uppercase tracking-wider hover:underline">Laisser un avis</span>
-                                  )}
                                 </div>
-                                <span className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-1 group-hover:gap-2 transition-all">
-                                  Voir le compte rendu <ChevronRight size={10} />
-                                </span>
+                                <div className="flex flex-col items-end gap-2 justify-between">
+                                  <div className="flex gap-1 text-yellow-500">
+                                    {hasRating ? (
+                                      [...Array(5)].map((_, i) => (
+                                        <Star key={i} size={14} className={i < apptRating ? 'fill-current' : 'opacity-20'} />
+                                      ))
+                                    ) : appt.status === 'completed' ? (
+                                      <span className="text-[11px] font-bold text-amber-600 uppercase tracking-wider">Noter cette séance</span>
+                                    ) : null}
+                                  </div>
+                                  <span className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-1 group-hover:gap-2 transition-all">
+                                    Détails <ChevronRight size={10} />
+                                  </span>
+                                </div>
                               </div>
                             </div>
+                          );
+                        })}
+
+                        {pastAppointments.length === 0 && (
+                          <div className="p-12 text-center bg-card-bg border border-dashed border-border-color rounded-3xl">
+                            <History className="w-12 h-12 text-text-muted/30 mx-auto mb-4" />
+                            <p className="font-bold text-text-main">Aucun historique</p>
+                            <p className="text-text-muted text-sm">Vos séances passées apparaîtront ici.</p>
                           </div>
-                        ))}
+                        )}
                       </div>
                     </>
                   ) : (
@@ -959,25 +1351,27 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                       </button>
 
                       <div className="space-y-6">
-                        {/* Interactive Rating Form for Unrated Sessions placed prominently */}
-                        {!selectedSession.rated && (
+                        {/* Rating form for unrated completed sessions */}
+                        {selectedSession.status === 'completed' && 
+                         !selectedSession.appointmentOutcome?.rating && 
+                         !selectedSession.report?.rating && (
                           <div className="t-card border-2 border-amber-500/30 bg-gradient-to-r from-amber-500/5 via-amber-500/10 to-transparent p-6 rounded-3xl space-y-4">
                             <div className="flex items-start gap-4">
                               <div className="p-3 bg-amber-500 text-white rounded-2xl shadow-md">
                                 <Star size={24} className="fill-current animate-pulse" />
                               </div>
                               <div>
-                                <h4 className="font-extrabold text-base text-text-main text-left">Évaluer cette séance du {selectedSession.date}</h4>
-                                <p className="text-xs text-text-muted text-left mt-0.5">Prenez un instant pour noter la qualité de l'échange et laisser votre retour.</p>
+                                <h4 className="font-extrabold text-base text-text-main text-left">Évaluer cette séance</h4>
+                                <p className="text-xs text-text-muted text-left mt-0.5">Prenez un instant pour noter la qualité de l'échange.</p>
                               </div>
                             </div>
                             
                             <div className="space-y-4 pt-3 text-left">
                               <div>
-                                <label className="block text-[11px] font-black uppercase text-amber-600 tracking-wider mb-2">1. Sélectionner une note</label>
+                                <label className="block text-[11px] font-black uppercase text-amber-600 tracking-wider mb-2">Note</label>
                                 <div className="flex gap-2">
                                   {[1, 2, 3, 4, 5].map((star) => {
-                                    const isLight = ratingFeedbackHover >= star || (ratingFeedbackSelected || 0) >= star;
+                                    const isLight = ratingFeedbackHover >= star || ratingFeedbackSelected >= star;
                                     return (
                                       <button
                                         type="button"
@@ -998,9 +1392,9 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                               </div>
 
                               <div className="space-y-1.5">
-                                <label className="block text-[11px] font-black uppercase text-amber-600 tracking-wider">2. Ajouter un commentaire (facultatif)</label>
+                                <label className="block text-[11px] font-black uppercase text-amber-600 tracking-wider">Commentaire (facultatif)</label>
                                 <textarea
-                                  placeholder="Racontez brièvement comment s'est déroulée la séance (conseils, exercices suivis, etc.). Ce retour est confidentiel et partagé avec votre thérapeute."
+                                  placeholder="Partagez votre ressenti sur cette séance..."
                                   value={ratingFeedbackComment}
                                   onChange={(e) => setRatingFeedbackComment(e.target.value)}
                                   className="w-full text-xs font-semibold p-4 bg-card-bg border-2 border-border-color rounded-2xl focus:border-amber-500 outline-none leading-relaxed transition-all h-24 resize-none"
@@ -1009,15 +1403,15 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
 
                               <button
                                 type="button"
-                                disabled={!ratingFeedbackSelected}
-                                onClick={() => {
-                                  handleRateSession(selectedSession.id, ratingFeedbackSelected, ratingFeedbackComment);
-                                  setRatingFeedbackSelected(0);
-                                  setRatingFeedbackComment('');
-                                }}
-                                className="w-full py-4 rounded-xl text-xs font-black text-white bg-amber-500 hover:bg-amber-600 focus:outline-none transition-all duration-200 cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                                disabled={!ratingFeedbackSelected || ratingLoading}
+                                onClick={() => handleRateSession(selectedSession.id, ratingFeedbackSelected, ratingFeedbackComment)}
+                                className="w-full py-4 rounded-xl text-xs font-black text-white bg-amber-500 hover:bg-amber-600 transition-all duration-200 cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
                               >
-                                Publier mon avis <Check size={14} />
+                                {ratingLoading ? (
+                                  <><Loader2 size={14} className="animate-spin" /> Publication...</>
+                                ) : (
+                                  <><Check size={14} /> Publier mon avis</>
+                                )}
                               </button>
                             </div>
                           </div>
@@ -1026,6 +1420,113 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                         <SessionReport session={selectedSession} />
                       </div>
                     </motion.div>
+                  )}
+                </motion.div>
+              )}
+
+              {activeTab === 'notifications' && (
+                <motion.div
+                  key="notifications"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 10 }}
+                  className="space-y-6"
+                >
+                  <div className="flex items-center justify-between mb-8">
+                    <div>
+                      <h3 className="text-2xl font-bold">Notifications</h3>
+                      <p className="text-text-muted font-medium">
+                        Refus, annulations, confirmations et autres alertes liées à vos rendez-vous.
+                      </p>
+                    </div>
+                    <Bell className="w-10 h-10 text-primary opacity-20" />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <p className="text-[11px] text-text-muted font-bold uppercase tracking-widest">
+                      {notifications.length} notification{notifications.length > 1 ? 's' : ''}
+                    </p>
+                    {notifications.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          notificationApi
+                            .markAllAsRead()
+                            .then(() => {
+                              setNotifications((prev) =>
+                                prev.map((n) => ({ ...n, isRead: true })),
+                              );
+                              refreshUnreadCount();
+                            })
+                            .catch((err) => console.error('markAllAsRead failed:', err));
+                        }}
+                        className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-primary hover:underline"
+                      >
+                        <CheckCheck size={14} />
+                        Tout marquer comme lu
+                      </button>
+                    )}
+                  </div>
+
+                  {notifLoading && notifications.length === 0 ? (
+                    <div className="p-12 text-center bg-card-bg border border-dashed border-border-color rounded-3xl">
+                      <Loader2 className="w-10 h-10 mx-auto text-primary animate-spin mb-3" />
+                      <p className="text-text-muted font-medium">Chargement des notifications…</p>
+                    </div>
+                  ) : notifications.length === 0 ? (
+                    <div className="p-12 text-center bg-card-bg border border-dashed border-border-color rounded-3xl">
+                      <Bell className="w-12 h-12 mx-auto text-text-muted/30 mb-4" />
+                      <p className="font-bold text-text-main">Aucune notification</p>
+                      <p className="text-text-muted text-sm">
+                        Les alertes liées à vos rendez-vous apparaîtront ici.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {notifications.map((notif) => {
+                        const style = getNotificationStyle(notif.type);
+                        const IconComp = style.icon;
+                        return (
+                          <div
+                            key={notif.id}
+                            data-testid={`notification-${notif.type}`}
+                            onClick={() => !notif.isRead && handleMarkAsRead(notif.id)}
+                            className={`t-card border ${style.ring} ${style.bg} ${notif.isRead ? 'opacity-70' : ''} p-5 flex flex-col sm:flex-row items-start gap-4 transition-all cursor-pointer hover:translate-x-1`}
+                          >
+                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${style.iconBg}`}>
+                              <IconComp size={22} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="font-extrabold text-sm text-text-main">
+                                  {notif.title || 'Notification'}
+                                </p>
+                                {!notif.isRead && (
+                                  <span className="w-2 h-2 rounded-full bg-primary animate-pulse" aria-label="non lu" />
+                                )}
+                              </div>
+                              <p className="text-sm font-medium text-text-muted leading-relaxed mt-1">
+                                {notif.message}
+                              </p>
+                              <p className="text-[10px] text-text-muted font-bold uppercase tracking-widest mt-2">
+                                {formatRelativeTime(notif.createdAt)}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteNotification(notif.id);
+                              }}
+                              className="p-2 rounded-xl text-text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                              aria-label="Supprimer la notification"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </motion.div>
               )}
@@ -1038,7 +1539,6 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
       <AnimatePresence>
         {showChangeTherapistConfirm && (
           <>
-            {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -1046,7 +1546,6 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
               onClick={() => setShowChangeTherapistConfirm(false)}
               className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999] flex items-center justify-center p-4 cursor-pointer"
             >
-              {/* Modal Card */}
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 15 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -1054,7 +1553,6 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                 onClick={(e) => e.stopPropagation()}
                 className="bg-card-bg w-full max-w-lg border border-border-color rounded-[2.5rem] shadow-2xl overflow-hidden relative cursor-default p-8 md:p-10 text-left"
               >
-                {/* Close Button */}
                 <button
                   type="button"
                   onClick={() => setShowChangeTherapistConfirm(false)}
@@ -1063,59 +1561,46 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                   <X size={16} />
                 </button>
 
-                {/* Attention Icon / Header Title */}
                 <div className="mb-6 flex items-center gap-3">
                   <div className="p-3 bg-amber-500/10 text-amber-600 rounded-2xl">
                     <AlertTriangle size={22} />
                   </div>
                   <div>
                     <h3 className="text-lg font-black text-text-main">Changer de thérapeute</h3>
-                    <p className="text-xs text-text-muted mt-0.5 font-semibold">Confirmation de votre choix de redirection</p>
+                    <p className="text-xs text-text-muted mt-0.5 font-semibold">Confirmation de votre choix</p>
                   </div>
                 </div>
 
                 <div className="space-y-6">
-                  {/* Warning details text */}
                   <div className="p-4 bg-amber-500/5 border border-amber-500/10 rounded-2xl space-y-1.5">
-                    <p className="text-xs text-amber-700 dark:text-amber-400 font-extrabold leading-tight shadow-none">
+                    <p className="text-xs text-amber-700 dark:text-amber-400 font-extrabold leading-tight">
                       Êtes-vous sûr de vouloir changer de thérapeute ?
                     </p>
                     <p className="text-[11px] text-text-muted leading-relaxed font-semibold">
-                      Cette action vous dissociera de votre praticien actuel. Vos anciennes données de messagerie et de rendez-vous resteront archivées de manière sécurisée, mais vous ne serez plus directement suivi par ce praticien.
+                      Cette action vous dissociera de votre praticien actuel.
                     </p>
                   </div>
 
-                  {/* Current Therapist Card Profile */}
-                  <div className="space-y-2">
-                    <h4 className="text-[10px] font-black uppercase tracking-widest text-primary">Votre thérapeute actuel</h4>
-                    <div className="p-5 bg-bg-main border border-border-color rounded-2xl flex items-center gap-4 hover:shadow-sm transition-all">
-                      <div className="w-14 h-14 bg-primary-light rounded-2xl flex items-center justify-center text-primary font-black text-2xl shadow-inner border-2 border-card-bg">
-                        {therapist.name.replace(/^(Dr\.|Mme|Mr\.)\s*/i, '').charAt(0) || 'T'}
-                      </div>
-                      <div className="space-y-1">
-                        <h5 className="font-bold text-text-main text-base leading-none">{therapist.name}</h5>
-                        <p className="text-primary text-xs font-bold uppercase tracking-wider">{therapist.speciality}</p>
-                        
-                        {/* More therapist information showing consistency */}
-                        <div className="flex items-center gap-2 text-text-muted text-[10px] font-bold">
-                          <span className="flex items-center gap-1"><Star size={12} className="text-amber-500 fill-amber-500 animate-none mt-0" /> {therapist.rating || '4.8'}</span>
-                          <span>•</span>
-                          <span>{therapist.wilaya || '16 - Alger'}</span>
+                  {therapist && (
+                    <div className="space-y-2">
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-primary">Votre thérapeute actuel</h4>
+                      <div className="p-5 bg-bg-main border border-border-color rounded-2xl flex items-center gap-4">
+                        <div className="w-14 h-14 bg-primary-light rounded-2xl flex items-center justify-center text-primary font-black text-2xl shadow-inner border-2 border-card-bg">
+                          {therapist.name ? therapist.name.charAt(0).toUpperCase() : 'T'}
+                        </div>
+                        <div>
+                          <h5 className="font-bold text-text-main text-base">{therapist.name}</h5>
+                          <p className="text-primary text-xs font-bold uppercase tracking-wider">{therapist.speciality || 'Psychologue'}</p>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  )}
 
-                  <p className="text-[11px] text-text-muted leading-snug font-medium italic text-center">
-                    Vous pouvez passer en revue votre décision et revenir en arrière à tout moment sans incidence sur votre parcours.
-                  </p>
-
-                  {/* Action Buttons */}
                   <div className="flex gap-4 pt-2">
                     <button
                       type="button"
                       onClick={() => setShowChangeTherapistConfirm(false)}
-                      className="flex-1 py-3 bg-bg-main text-text-muted rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all text-xs font-extrabold tracking-wider uppercase border border-border-color cursor-pointer text-center"
+                      className="flex-1 py-3 bg-bg-main text-text-muted rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase border border-border-color cursor-pointer text-center"
                     >
                       Conserver
                     </button>
@@ -1125,7 +1610,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                         setShowChangeTherapistConfirm(false);
                         onNavigateToPage('REGISTRATION', { mode: 'RESULTS' });
                       }}
-                      className="flex-1 py-3 bg-primary text-white rounded-xl hover:scale-[1.02] active:scale-[0.98] transition-all text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-primary/25 cursor-pointer text-center animate-none"
+                      className="flex-1 py-3 bg-primary text-white rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-primary/25 cursor-pointer text-center"
                     >
                       Confirmer le changement
                     </button>

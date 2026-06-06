@@ -28,8 +28,8 @@ router.get('/slots/:therapistId', authorize(['patient']), appointmentController.
 // Create session report for an appointment (therapist only)
 router.post('/:id/report', authorize(['therapist']), appointmentController.createSessionReport);
 
-// Get session report for an appointment
-router.get('/:id/report', authorize(['therapist', 'admin']), appointmentController.getSessionReport);
+// Get session report for an appointment (therapist: owns appointment, patient: owns appointment, admin: all)
+router.get('/:id/report', authorize(['patient', 'therapist', 'admin']), appointmentController.getSessionReport);
 
 // Admin routes
 router.get('/', authorize(['admin']), appointmentController.getAll);

@@ -7,80 +7,19 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ============================================================================
-// ENUMS
-// ============================================================================
-
-/// User roles for authentication and authorization
-enum UserRole {
-  PATIENT
-  THERAPIST
-  ADMIN
-}
-
-/// Patient preference for therapist gender
-enum GenrePref {
-  FEMME // Une femme
-  HOMME // Un homme
-  PEU_IMPORTE // Peu importe
-}
-
-/// Patient sensitivity preference (cultural/religious awareness)
-enum SensibilitePatient {
-  OUI_IMPORTANT // Oui, c'est important pour moi
-  NON_NECESSAIRE // Non, ce n'est pas nécessaire
-  NE_SAIS_PAS // Je ne sais pas
-}
-
-/// Patient's past therapy experience
-enum ExperiencePassee {
-  OUI_POSITIVE // Oui, j'ai eu une expérience positive
-  OUI_NON_SATISFAISANTE // Oui, mais l'expérience n'était pas satisfaisante
-  NON_PREMIERE_FOIS // Non, c'est ma première fois
-  NE_SAIS_PAS // Je ne sais pas
-}
-
-/// Patient's expectations for therapy style
-enum AttentesTherapie {
-  ECOUTE_ACTIVE // Quelqu'un qui m'écoute activement sans trop intervenir
-  EXERCICES_OUTILS // Quelqu'un qui me donne des exercices et des outils concrets
-  COMPRENDRE_PASSE // Quelqu'un qui m'aide à comprendre mon passé en profondeur
-  NE_SAIS_PAS // Je ne sais pas encore
-}
-
-/// Therapist's sensitivity/cultural approach
-enum SensibiliteTherapeute {
-  INTEGRE_DEMANDE // J'intègre explicitement ces dimensions à la demande
-  LAIQUE_NEUTRE // Mon approche est strictement laïque et neutre
-  AUTRE // Autre
-}
-
-/// Therapist's therapeutic approach
-enum ApprocheTherapeute {
-  TCC // TCC (Exercices et outils concrets)
-  PSYCHANALYSE // Psychanalyse / Psychodynamique (Exploration du passé)
-  HUMANISTE_GESTALT // Humaniste / Gestalt (Écoute active)
-  INTEGRATIVE // Approche intégrative (Mélange)
-}
-
-// ============================================================================
-// BETTER AUTH TABLES (Required for authentication)
-// ============================================================================
-
 model User {
   id            String     @id
   name          String
   email         String     @unique
   emailVerified Boolean    @default(false)
   image         String?
-  role          UserRole @default(PATIENT)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  sessions  Session[]
-  accounts  Account[]
-  patient   Patient?
-  therapist Therapist?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  role          UserRole   @default(PATIENT)
+  accounts      Account[]
+  patient       Patient?
+  sessions      Session[]
+  therapist     Therapist?
 
   @@map("user")
 }
@@ -128,14 +67,6 @@ model Verification {
 
   @@map("verification")
 }
-
-// ============================================================================
-// QUESTIONNAIRE ENUMS (Single-choice options)
-// ============================================================================
-
-// ============================================================================
-// LOOKUP TABLES (Multi-select options)
-// ============================================================================
 
 /// Available consultation modes
 model ConsultationMode {
@@ -392,11 +323,14 @@ model TherapistPublicType {
 }
 
 /// Appointment
+/// therapistAvailableTimeSlotId is OPTIONAL (String?) so that cancelled/completed/no_show
+/// appointments can be detached when the therapist deletes the underlying time slot.
+/// Active appointments (scheduled/confirmed) ALWAYS keep a valid slot reference.
 model Appointment {
   id                           String                     @id @default(cuid())
   patientId                    String
   therapistId                  String
-  therapistAvailableTimeSlotId String                     @unique
+  therapistAvailableTimeSlotId String?                    @unique
   scheduledAt                  DateTime
   durationMinutes              Int                        @default(60)
   status                       String                     @default("scheduled")
@@ -407,7 +341,7 @@ model Appointment {
   createdAt                    DateTime                   @default(now())
   updatedAt                    DateTime                   @updatedAt
   patient                      Patient                    @relation(fields: [patientId], references: [id])
-  therapistAvailableTimeSlot   TherapistAvailableTimeSlot @relation(fields: [therapistAvailableTimeSlotId], references: [id])
+  therapistAvailableTimeSlot   TherapistAvailableTimeSlot? @relation(fields: [therapistAvailableTimeSlotId], references: [id])
   therapist                    Therapist                  @relation(fields: [therapistId], references: [id])
   appointmentOutcome           AppointmentOutcome?
 
@@ -505,3 +439,54 @@ model AuditLog {
   @@map("audit_log")
 }
 
+/// User roles for authentication and authorization
+enum UserRole {
+  PATIENT
+  THERAPIST
+  ADMIN
+}
+
+/// Patient preference for therapist gender
+enum GenrePref {
+  FEMME
+  HOMME
+  PEU_IMPORTE
+}
+
+/// Patient sensitivity preference (cultural/religious awareness)
+enum SensibilitePatient {
+  OUI_IMPORTANT
+  NON_NECESSAIRE
+  NE_SAIS_PAS
+}
+
+/// Patient's past therapy experience
+enum ExperiencePassee {
+  OUI_POSITIVE
+  OUI_NON_SATISFAISANTE
+  NON_PREMIERE_FOIS
+  NE_SAIS_PAS
+}
+
+/// Patient's expectations for therapy style
+enum AttentesTherapie {
+  ECOUTE_ACTIVE
+  EXERCICES_OUTILS
+  COMPRENDRE_PASSE
+  NE_SAIS_PAS
+}
+
+/// Therapist's sensitivity/cultural approach
+enum SensibiliteTherapeute {
+  INTEGRE_DEMANDE
+  LAIQUE_NEUTRE
+  AUTRE
+}
+
+/// Therapist's therapeutic approach
+enum ApprocheTherapeute {
+  TCC
+  PSYCHANALYSE
+  HUMANISTE_GESTALT
+  INTEGRATIVE
+}

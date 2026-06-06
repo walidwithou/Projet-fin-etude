@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { motion } from 'motion/react';
 import { Shield, Plus, CheckCircle2, ArrowRight, Loader2, AlertCircle, X } from 'lucide-react';
-import { therapist } from '../services/api';
+import { therapistApi } from '../services/api';
 
 export default function Upload({ uploadedFiles, onFileUpload, onRemoveFile, onComplete, isLoading, error }) {
   const [uploading, setUploading] = useState(false);
@@ -44,7 +44,7 @@ export default function Upload({ uploadedFiles, onFileUpload, onRemoveFile, onCo
         }
       }
 
-      await therapist.uploadDocuments(formData);
+      await therapistApi.uploadDocuments(formData);
       setUploadSuccess(true);
       setUploading(false);
       onComplete();

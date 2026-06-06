@@ -1,5 +1,33 @@
 import { prisma } from '../db/prisma.js';
 
+// ---------------------------------------------------------------------------
+// Timezone-agnostic date helpers
+// ---------------------------------------------------------------------------
+// All helpers construct dates via Date.UTC so the interpreted time (e.g. 13:00)
+// is stored identically in the database. No hidden timezone offset is applied.
+// Without this, building via "new Date(y, m-1, d, h, min)" uses the server's
+// local timezone (UTC+1 for Africa/Algiers), causing the database to store
+// {h-1}:{min} UTC, which introduces a 1-hour shift relative to the UI.
+
+const buildLocalDate = (dateStr, timeStr) => {
+  const [y, m, d] = (dateStr || '').split('-').map(Number);
+  const [h = 0, min = 0] = (timeStr || '00:00').split(':').map(Number);
+  if (!y || !m || !d) {
+    throw new Error(`Invalid date components from "${dateStr}" "${timeStr}"`);
+  }
+  return new Date(Date.UTC(y, m - 1, d, h, min, 0, 0));
+};
+
+const startOfLocalDay = (dateStr) => {
+  const [y, m, d] = (dateStr || '').split('-').map(Number);
+  return new Date(Date.UTC(y, (m || 1) - 1, d || 1, 0, 0, 0, 0));
+};
+
+const endOfLocalDay = (dateStr) => {
+  const [y, m, d] = (dateStr || '').split('-').map(Number);
+  return new Date(Date.UTC(y, (m || 1) - 1, d || 1, 23, 59, 59, 999));
+};
+
 /**
  * Get public list of verified therapists
  */
@@ -103,6 +131,11 @@ const getProfile = async (req, res, next) => {
   try {
     const therapist = await prisma.therapist.findFirst({
       where: { userId: req.user.id },
+      include: {
+        user: {
+          select: { name: true, email: true },
+        },
+      },
     });
 
     if (!therapist) {
@@ -161,37 +194,28 @@ const updateProfile = async (req, res, next) => {
 
 /**
  * Update therapist availability
+ *
+ * DEPRECATED: availability is now stored in
+ * `TherapistAvailableTimeSlot` (one row per slot). The legacy
+ * JSON column on `Therapist` is kept for backwards compatibility
+ * but no longer drives the calendar. New clients must use
+ *   POST   /therapists/availability          (create slots)
+ *   PUT    /therapists/availability/:slotId  (modify slot)
+ *   DELETE /therapists/availability/:slotId  (delete slot)
+ *   GET    /therapists/availability          (list slots)
+ * This endpoint is kept as a no-op with a 410 Gone so old
+ * clients fail fast and migrate.
  */
 const updateAvailability = async (req, res, next) => {
-  try {
-    const { availability } = req.body;
-
-    if (!availability) {
-      return res.status(400).json({
-        success: false,
-        message: 'Availability data is required',
-      });
-    }
-
-    await prisma.therapist.updateMany({
-      where: { userId: req.user.id },
-      data: {
-        availability,
-        updatedAt: new Date(),
-      },
-    });
-
-    res.json({
-      success: true,
-      message: 'Availability updated successfully',
-    });
-  } catch (error) {
-    next(error);
-  }
+  return res.status(410).json({
+    success: false,
+    message:
+      'This endpoint is deprecated. Use POST/PUT/DELETE /therapists/availability to manage slots.',
+  });
 };
 
 /**
- * Get therapist's patients
+ * Get therapist's patients.
  */
 const getPatients = async (req, res, next) => {
   try {
@@ -206,14 +230,47 @@ const getPatients = async (req, res, next) => {
       });
     }
 
-    const patients = await prisma.patient.findMany({
-      where: { currentTherapistid: therapist.id },
-      orderBy: { createdAt: 'desc' },
+    const patientsWithAppointments = await prisma.appointment.findMany({
+      where: { therapistId: therapist.id },
+      select: { patientId: true },
+      distinct: ['patientId'],
     });
+
+    const patientIds = new Set([
+      ...patientsWithAppointments.map((a) => a.patientId),
+    ]);
+
+    if (therapist.id) {
+      const currentlyAssigned = await prisma.patient.findMany({
+        where: { currentTherapistid: therapist.id },
+        select: { id: true },
+      });
+      currentlyAssigned.forEach((p) => patientIds.add(p.id));
+    }
+
+    const patients = patientIds.size
+      ? await prisma.patient.findMany({
+          where: { id: { in: Array.from(patientIds) } },
+          include: {
+            user: { select: { name: true, email: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+        })
+      : [];
+
+    const currentlyAssignedIds = new Set(
+      patients
+        .filter((p) => p.currentTherapistid === therapist.id)
+        .map((p) => p.id),
+    );
+    const annotated = patients.map((p) => ({
+      ...p,
+      isCurrent: currentlyAssignedIds.has(p.id),
+    }));
 
     res.json({
       success: true,
-      data: patients,
+      data: annotated,
     });
   } catch (error) {
     next(error);
@@ -221,7 +278,7 @@ const getPatients = async (req, res, next) => {
 };
 
 /**
- * Get therapist's appointments
+ * Get therapist's appointments.
  */
 const getAppointments = async (req, res, next) => {
   try {
@@ -240,7 +297,15 @@ const getAppointments = async (req, res, next) => {
     const where = { therapistId: therapist.id };
 
     if (status) {
-      where.status = status;
+      const statusList = String(status)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (statusList.length === 1) {
+        where.status = statusList[0];
+      } else if (statusList.length > 1) {
+        where.status = { in: statusList };
+      }
     }
     if (from || to) {
       where.scheduledAt = {};
@@ -251,7 +316,15 @@ const getAppointments = async (req, res, next) => {
     const appointments = await prisma.appointment.findMany({
       where,
       include: {
-        patient: true,
+        patient: {
+          include: {
+            user: {
+              select: { name: true, email: true },
+            },
+          },
+        },
+        therapistAvailableTimeSlot: true,
+        appointmentOutcome: true,
       },
       orderBy: { scheduledAt: 'asc' },
     });
@@ -267,7 +340,6 @@ const getAppointments = async (req, res, next) => {
 
 /**
  * Get therapist's reviews.
- * Reviews are stored as AppointmentOutcome rows linked to the therapist's appointments.
  */
 const getReviews = async (req, res, next) => {
   try {
@@ -317,7 +389,6 @@ const getReviews = async (req, res, next) => {
       prisma.appointmentOutcome.count({ where }),
     ]);
 
-    // Sanitize: hide patient info when the review is anonymous
     const sanitizedReviews = reviews.map((review) => ({
       id: review.id,
       rating: review.rating,
@@ -494,7 +565,6 @@ const verifyTherapist = async (req, res, next) => {
       },
     });
 
-    // Create audit log
     await prisma.auditLog.create({
       data: {
         actorId: req.user.id,
@@ -540,7 +610,6 @@ const uploadDocuments = async (req, res, next) => {
       });
     }
 
-    // Upload each file to Filebase and create a Document record
     const { uploadFile } = await import('../services/storage.service.js');
     const { randomUUID } = await import('crypto');
 
@@ -580,6 +649,337 @@ const uploadDocuments = async (req, res, next) => {
   }
 };
 
+/**
+ * Get therapist's available time slots
+ */
+const getAvailability = async (req, res, next) => {
+  try {
+    const therapist = await prisma.therapist.findFirst({
+      where: { userId: req.user.id },
+    });
+
+    if (!therapist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Therapist profile not found',
+      });
+    }
+
+    const { from, to } = req.query;
+    const where = { therapistId: therapist.id };
+
+    if (from || to) {
+      where.startAt = {};
+      if (from) where.startAt.gte = new Date(from);
+      if (to) where.startAt.lte = new Date(to);
+    }
+
+    const slots = await prisma.therapistAvailableTimeSlot.findMany({
+      where,
+      include: {
+        appointment: {
+          select: { id: true, status: true },
+        },
+      },
+      orderBy: { startAt: 'asc' },
+    });
+
+    res.json({
+      success: true,
+      data: slots,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Create time slots for a therapist.
+ */
+const createTimeSlots = async (req, res, next) => {
+  try {
+    const therapist = await prisma.therapist.findFirst({
+      where: { userId: req.user.id },
+    });
+
+    if (!therapist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Therapist profile not found',
+      });
+    }
+
+    const { slots } = req.body;
+
+    if (!slots || !Array.isArray(slots) || slots.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Slots array is required',
+      });
+    }
+
+    const createdSlots = [];
+
+    for (const slotGroup of slots) {
+      const { date, startTime, endTime } = slotGroup;
+
+      if (!date || !startTime || !endTime) {
+        continue;
+      }
+
+      let startDate;
+      let endDate;
+      try {
+        startDate = buildLocalDate(date, startTime);
+        endDate = buildLocalDate(date, endTime);
+      } catch (_) {
+        continue;
+      }
+
+      if (startDate >= endDate) continue;
+
+      let current = new Date(startDate);
+      while (current < endDate) {
+        const slotEnd = new Date(current);
+        // Use UTC hours since the dates are constructed via Date.UTC
+        slotEnd.setUTCHours(current.getUTCHours() + 1, 0, 0, 0);
+
+        if (slotEnd > endDate) break;
+
+        const existingSlot = await prisma.therapistAvailableTimeSlot.findFirst({
+          where: {
+            therapistId: therapist.id,
+            startAt: current,
+            endAt: slotEnd,
+          },
+        });
+
+        if (!existingSlot) {
+          const slot = await prisma.therapistAvailableTimeSlot.create({
+            data: {
+              therapistId: therapist.id,
+              startAt: current,
+              endAt: slotEnd,
+              isBooked: false,
+            },
+          });
+          createdSlots.push(slot);
+        }
+
+        current = new Date(slotEnd);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      data: createdSlots,
+      message: `${createdSlots.length} créneau(x) créé(s) avec succès`,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Update (modify) a single time slot.
+ */
+const updateTimeSlot = async (req, res, next) => {
+  try {
+    const therapist = await prisma.therapist.findFirst({
+      where: { userId: req.user.id },
+    });
+
+    if (!therapist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Therapist profile not found',
+      });
+    }
+
+    const { slotId } = req.params;
+    const { date, startTime, endTime } = req.body || {};
+
+    if (!date && !startTime && !endTime) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one of date, startTime, endTime is required',
+      });
+    }
+
+    const slot = await prisma.therapistAvailableTimeSlot.findUnique({
+      where: { id: slotId },
+    });
+
+    if (!slot) {
+      return res.status(404).json({
+        success: false,
+        message: 'Time slot not found',
+      });
+    }
+
+    if (slot.therapistId !== therapist.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - this slot does not belong to you',
+      });
+    }
+
+    if (slot.isBooked) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Cannot modify a booked time slot. Cancel the appointment first.',
+      });
+    }
+
+    const oldStart = new Date(slot.startAt);
+    const oldEnd = new Date(slot.endAt);
+    const oldDateStr = `${oldStart.getUTCFullYear()}-${String(
+      oldStart.getUTCMonth() + 1,
+    ).padStart(2, '0')}-${String(oldStart.getUTCDate()).padStart(2, '0')}`;
+    const oldStartTime = `${String(oldStart.getUTCHours()).padStart(2, '0')}:${String(
+      oldStart.getUTCMinutes(),
+    ).padStart(2, '0')}`;
+    const oldEndTime = `${String(oldEnd.getUTCHours()).padStart(2, '0')}:${String(
+      oldEnd.getUTCMinutes(),
+    ).padStart(2, '0')}`;
+
+    const newDateStr = date || oldDateStr;
+    const newStartTime = startTime || oldStartTime;
+    const newEndTime = endTime || oldEndTime;
+
+    let newStart;
+    let newEnd;
+    try {
+      newStart = buildLocalDate(newDateStr, newStartTime);
+      newEnd = buildLocalDate(newDateStr, newEndTime);
+    } catch (e) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid date/time: ${e.message}`,
+      });
+    }
+
+    if (newStart >= newEnd) {
+      return res.status(400).json({
+        success: false,
+        message: 'Start time must be before end time',
+      });
+    }
+
+    if (new Date() >= newStart) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot move a slot into the past',
+      });
+    }
+
+    const collision = await prisma.therapistAvailableTimeSlot.findFirst({
+      where: {
+        therapistId: therapist.id,
+        id: { not: slotId },
+        startAt: newStart,
+        endAt: newEnd,
+      },
+    });
+    if (collision) {
+      return res.status(409).json({
+        success: false,
+        message: 'Another slot already exists at that time',
+      });
+    }
+
+    const updated = await prisma.therapistAvailableTimeSlot.update({
+      where: { id: slotId },
+      data: {
+        startAt: newStart,
+        endAt: newEnd,
+        updatedAt: new Date(),
+      },
+    });
+
+    res.json({
+      success: true,
+      data: updated,
+      message: 'Time slot updated successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Delete a time slot
+ *
+ * Règles métier :
+ *   - Si des appointments scheduled/confirmed pointent vers ce slot → REFUS
+ *   - Les appointments cancelled/completed/no_show sont automatiquement détachés
+ *     par la FK `ON DELETE SET NULL` au niveau de la base de données
+ *   - Le slot est supprimé en une seule opération
+ *   - L'historique des rendez-vous est conservé
+ */
+const deleteTimeSlot = async (req, res, next) => {
+  try {
+    const therapist = await prisma.therapist.findFirst({
+      where: { userId: req.user.id },
+    });
+
+    if (!therapist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Therapist profile not found',
+      });
+    }
+
+    const { slotId } = req.params;
+
+    const slot = await prisma.therapistAvailableTimeSlot.findUnique({
+      where: { id: slotId },
+      include: {
+        appointment: {
+          select: { status: true },
+        },
+      },
+    });
+
+    if (!slot) {
+      return res.status(404).json({
+        success: false,
+        message: 'Time slot not found',
+      });
+    }
+
+    if (slot.therapistId !== therapist.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - this slot does not belong to you',
+      });
+    }
+
+    // Vérifier si un rendez-vous actif est lié → REFUS
+    if (slot.appointment && ['scheduled', 'confirmed'].includes(slot.appointment.status)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Impossible de supprimer ce créneau : un rendez-vous actif y est associé.',
+      });
+    }
+
+    // Supprimer le créneau — la FK ON DELETE SET NULL détache
+    // automatiquement tout rendez-vous terminal (cancelled/completed/no_show)
+    await prisma.therapistAvailableTimeSlot.delete({
+      where: { id: slotId },
+    });
+
+    res.json({
+      success: true,
+      message: 'Créneau supprimé avec succès. Les rendez-vous historiques sont conservés.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export {
   getPublicTherapists,
   getPublicTherapistProfile,
@@ -594,4 +994,8 @@ export {
   getTherapistById,
   verifyTherapist,
   uploadDocuments,
+  getAvailability,
+  createTimeSlots,
+  updateTimeSlot,
+  deleteTimeSlot,
 };

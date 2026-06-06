@@ -47,8 +47,20 @@ router.get('/profile', therapistOnly, therapistController.getProfile);
 // Update therapist profile
 router.put('/profile', therapistOnly, therapistController.updateProfile);
 
-// Update availability
+// Update availability (legacy JSON-based)
 router.put('/availability', therapistOnly, therapistController.updateAvailability);
+
+// Get therapist's available time slots (from TherapistAvailableTimeSlot)
+router.get('/availability', therapistOnly, therapistController.getAvailability);
+
+// Create time slots (generates hourly slots from date/time ranges)
+router.post('/availability', therapistOnly, therapistController.createTimeSlots);
+
+// Update (modify) an existing time slot
+router.put('/availability/:slotId', therapistOnly, therapistController.updateTimeSlot);
+
+// Delete a time slot
+router.delete('/availability/:slotId', therapistOnly, therapistController.deleteTimeSlot);
 
 // Get therapist's patients
 router.get('/patients', therapistOnly, therapistController.getPatients);

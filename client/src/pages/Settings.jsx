@@ -28,78 +28,11 @@ import Header from '../components/Header';
 import Footer from '../components/Footer';
 import PastTherapist from '../components/PastTherapist';
 import PastSessionsList from '../components/PastSessionsList';
-
-const DEFAULT_PAST_THERAPISTS = [
-  {
-    id: 't1',
-    name: "Dr. Amine B.",
-    speciality: "Psychologue clinicien",
-    wilaya: "16 - Alger",
-    rating: 4.9,
-    sessionCount: 3,
-    lastSessionDate: "28 Avril 2024",
-    sessions: [
-      {
-        id: "s1",
-        date: "28 Avril 2024",
-        duration: "45 min",
-        status: "Terminée",
-        rated: true,
-        rating: 5,
-        note: "Séance très enrichissante, on a mis le doigt sur mes angoisses régulières.",
-        therapistName: "Dr. Amine B.",
-        report: {
-          summary: "Analyse approfondie des facteurs de stress d'origine professionnelle. Introduction aux techniques d'ancrage.",
-          homework: "Pratiquer la respiration carrée au calme.",
-          nextGoals: ["Intégrer les micropauses", "Gestion du temps de repos"]
-        }
-      },
-      {
-        id: "s2",
-        date: "21 Avril 2024",
-        duration: "50 min",
-        status: "Terminée",
-        rated: true,
-        rating: 4,
-        note: "Bon début de thérapie, beaucoup de bienveillance.",
-        therapistName: "Dr. Amine B.",
-        report: {
-          summary: "Première prise de contact et exploration de la situation globale. Définition des attentes mutuelles.",
-          homework: "Rédiger ses objectifs de vie prioritaires.",
-          nextGoals: ["Définir les priorités", "Pratique de cohérence cardiaque"]
-        }
-      }
-    ]
-  },
-  {
-    id: 't2',
-    name: "Mme Sarah K.",
-    speciality: "Thérapeute TCC",
-    wilaya: "31 - Oran",
-    rating: 4.8,
-    sessionCount: 1,
-    lastSessionDate: "15 Mars 2024",
-    sessions: [
-      {
-        id: "s3",
-        date: "15 Mars 2024",
-        duration: "45 min",
-        status: "Terminée",
-        rated: true,
-        rating: 5,
-        note: "Praticienne très professionnelle et humaine.",
-        therapistName: "Mme Sarah K.",
-        report: {
-          summary: "Bilan initial des symptômes anxieux et introduction à la restructuration cognitive.",
-          homework: "Identifier les pensées dysfonctionnelles automatiques.",
-          nextGoals: ["Biais cognitifs", "Régulation des émotions"]
-        }
-      }
-    ]
-  }
-];
+import { useAuth } from '../auth/AuthContext';
+import { patient as patientApi } from '../services/api';
 
 export default function Settings({ onNavigateToPage, initialTab = 'account', userRole = 'PATIENT' }) {
+  const { user } = useAuth();
   const t = (key, val) => val;
   const isRTL = false;
   const [activeTab, setActiveTab] = useState(() => {
@@ -112,19 +45,73 @@ export default function Settings({ onNavigateToPage, initialTab = 'account', use
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') || 'system');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // States for past therapists interaction
-  const [pastTherapists, setPastTherapists] = useState(() => {
-    const stored = localStorage.getItem('app_past_therapists');
-    if (stored) {
-      try {
-        return JSON.parse(stored);
-      } catch (e) {
-        return DEFAULT_PAST_THERAPISTS;
-      }
-    }
-    return DEFAULT_PAST_THERAPISTS;
-  });
+  // Real data states
+  const [sessionReports, setSessionReports] = useState([]);
+  const [pastTherapists, setPastTherapists] = useState([]);
   const [expandedTherapistId, setExpandedTherapistId] = useState(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Load real session history when tab is 'history' and role is PATIENT
+  useEffect(() => {
+    if (activeTab === 'history' && userRole !== 'THERAPIST') {
+      const loadHistory = async () => {
+        setLoadingHistory(true);
+        try {
+          const reportsRes = await patientApi.getSessionReports();
+          const reports = reportsRes.data || [];
+          setSessionReports(reports);
+          
+          // Group reports by therapist
+          const therapistMap = {};
+          reports.forEach(report => {
+            const therapistId = report.appointment?.therapistId || 'unknown';
+            const therapistName = report.appointment?.therapist?.user?.name || 'Thérapeute';
+            if (!therapistMap[therapistId]) {
+              therapistMap[therapistId] = {
+                id: therapistId,
+                name: therapistName,
+                speciality: report.appointment?.therapist?.approcheTherapeute || 'Psychologue',
+                wilaya: '16 - Alger',
+                rating: report.rating || 0,
+                sessionCount: 0,
+                lastSessionDate: '',
+                sessions: [],
+              };
+            }
+            therapistMap[therapistId].sessionCount += 1;
+            const sessionDate = new Date(report.appointment?.scheduledAt || report.createdAt);
+            const dateStr = sessionDate.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+            if (!therapistMap[therapistId].lastSessionDate || sessionDate > new Date(therapistMap[therapistId].lastSessionDate)) {
+              therapistMap[therapistId].lastSessionDate = dateStr;
+            }
+            therapistMap[therapistId].sessions.push({
+              id: report.id || report.appointmentId,
+              date: dateStr,
+              duration: '45 min',
+              status: 'Terminée',
+              rated: report.rating > 0,
+              rating: report.rating || 0,
+              note: report.comment || '',
+              therapistName,
+              report: {
+                summary: report.sessionNotes || 'Résumé non disponible.',
+                homework: '',
+                nextGoals: report.interventionsUsed || [],
+              },
+            });
+          });
+          
+          setPastTherapists(Object.values(therapistMap));
+        } catch (err) {
+          console.error('Failed to load session history:', err);
+          setPastTherapists([]);
+        } finally {
+          setLoadingHistory(false);
+        }
+      };
+      loadHistory();
+    }
+  }, [activeTab, userRole]);
 
   // Confidentiality detail views state
   const [selectedPrivacySection, setSelectedPrivacySection] = useState(null);
@@ -133,11 +120,11 @@ export default function Settings({ onNavigateToPage, initialTab = 'account', use
   const [anonData, setAnonData] = useState(true);
   const [emailAlerts, setEmailAlerts] = useState(true);
   
-  const [msgRetention, setMsgRetention] = useState('always'); // 'always' | '1year' | '3months'
+  const [msgRetention, setMsgRetention] = useState('always');
   const [hideNotifications, setHideNotifications] = useState(false);
   const [pinProtection, setPinProtection] = useState(false);
   
-  const [profileVisibility, setProfileVisibility] = useState('active_therapists'); // 'all' | 'active_therapists' | 'private'
+  const [profileVisibility, setProfileVisibility] = useState('active_therapists');
   const [hideEmail, setHideEmail] = useState(true);
   const [hidePhone, setHidePhone] = useState(true);
 
@@ -170,10 +157,11 @@ export default function Settings({ onNavigateToPage, initialTab = 'account', use
     }
   }, [darkMode]);
 
+  // Build current user from AuthContext
   const currentUser = {
-    name: userRole === 'THERAPIST' ? "Dr. Amine B." : "Walid B.",
-    email: userRole === 'THERAPIST' ? "amine.b@example.dz" : "walid@example.com",
-    role: userRole || "PATIENT"
+    name: user?.name || (userRole === 'THERAPIST' ? 'Dr.' : 'Utilisateur'),
+    email: user?.email || '',
+    role: userRole || 'PATIENT'
   };
 
   const tabs = [
@@ -328,11 +316,11 @@ export default function Settings({ onNavigateToPage, initialTab = 'account', use
                       <div className="grid gap-6">
                         <div className="space-y-4">
                           <label className="text-xs font-bold uppercase tracking-wider text-primary">Nom Complet</label>
-                          <input type="text" defaultValue="Walid B." className="t-input w-full" />
+                          <input type="text" defaultValue={currentUser.name} className="t-input w-full" />
                         </div>
                         <div className="space-y-4">
                           <label className="text-xs font-bold uppercase tracking-wider text-primary">Email</label>
-                          <input type="email" defaultValue="walid@example.com" className="t-input w-full" />
+                          <input type="email" defaultValue={currentUser.email} className="t-input w-full" />
                         </div>
                         <div className="space-y-4">
                           <label className="text-xs font-bold uppercase tracking-wider text-primary">Changer le mot de passe</label>
@@ -663,28 +651,20 @@ export default function Settings({ onNavigateToPage, initialTab = 'account', use
                           <h3 className="text-2xl font-bold mb-1">{t('historySettings', 'Historique personnel')}</h3>
                           <p className="text-xs text-text-muted font-semibold">{t('historySettingsSub', 'Gérez vos activités passées et thérapeutes consultés.')}</p>
                         </div>
-                        {/* Interactive toggle for easily validating empty/populated states */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const newHistory = pastTherapists.length > 0 ? [] : DEFAULT_PAST_THERAPISTS;
-                            setPastTherapists(newHistory);
-                            localStorage.setItem('app_past_therapists', JSON.stringify(newHistory));
-                            setExpandedTherapistId(null);
-                          }}
-                          className="px-3.5 py-2 text-xs font-black uppercase tracking-wider text-primary border border-primary/20 bg-primary/5 hover:bg-primary/10 rounded-xl transition-all cursor-pointer shadow-sm"
-                        >
-                          {pastTherapists.length > 0 ? t('emptyHistoryBtnEmptyState', "Afficher l'état vide") : t('emptyHistoryBtnGenerate', "Générer un historique")}
-                        </button>
                       </div>
                       
-                      {pastTherapists.length === 0 ? (
+                      {loadingHistory ? (
+                        <div className="t-card border-dashed border-2 border-border-color flex flex-col items-center justify-center p-12 space-y-4 text-center">
+                          <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+                          <p className="text-xs text-text-muted font-medium">Chargement de votre historique...</p>
+                        </div>
+                      ) : pastTherapists.length === 0 ? (
                         <div className="t-card border-dashed border-2 border-border-color flex flex-col items-center justify-center p-12 space-y-4 text-center">
                           <div className="p-4 bg-bg-main rounded-full text-text-muted">
                              <History size={32} />
                           </div>
-                          <p className="font-bold text-text-muted">{t('emptyHistoryTitle', 'Aucune activité masquée pour le moment.')}</p>
-                          <p className="text-xs text-text-muted max-w-xs">{t('emptyHistoryDesc', 'Vos archives de sessions passées apparaîtront ici si vous décidez de les dissocier de votre historique actif.')}</p>
+                          <p className="font-bold text-text-muted">{t('emptyHistoryTitle', 'Aucune activité pour le moment.')}</p>
+                          <p className="text-xs text-text-muted max-w-xs">{t('emptyHistoryDesc', 'Vos sessions passées apparaîtront ici après vos consultations.')}</p>
                         </div>
                       ) : (
                         <div className="space-y-4">
