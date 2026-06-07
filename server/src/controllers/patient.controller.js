@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { prisma } from '../db/prisma.js';
 
 /**
@@ -790,6 +791,572 @@ const getPatientById = async (req, res, next) => {
   }
 };
 
+/**
+ * STEP 1: Initiate change therapist — check for active appointments
+ *
+ * Business rules:
+ *   - If the patient has a confirmed appointment → BLOCK
+ *   - If the patient has a scheduled appointment → WARN, offer to cancel
+ *   - If no active appointments → PROCEED
+ */
+const initiateChangeTherapist = async (req, res, next) => {
+  try {
+    const patient = await prisma.patient.findFirst({
+      where: { userId: req.user.id },
+    });
+
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient profile not found',
+      });
+    }
+
+    const now = new Date();
+
+    // Check for confirmed appointment → BLOCK
+    const confirmedAppt = await prisma.appointment.findFirst({
+      where: {
+        patientId: patient.id,
+        status: 'confirmed',
+        scheduledAt: { gte: now },
+      },
+    });
+
+    if (confirmedAppt) {
+      return res.json({
+        success: true,
+        canProceed: false,
+        reason: 'confirmed_appointment',
+        message:
+          'Vous avez un rendez-vous confirmé avec votre thérapeute actuel.\n\n' +
+          'Vous ne pouvez pas changer de thérapeute tant que ce rendez-vous n\'est pas terminé ou annulé.',
+      });
+    }
+
+    // Check for scheduled appointment → WARN
+    const scheduledAppt = await prisma.appointment.findFirst({
+      where: {
+        patientId: patient.id,
+        status: 'scheduled',
+        scheduledAt: { gte: now },
+      },
+    });
+
+    if (scheduledAppt) {
+      return res.json({
+        success: true,
+        canProceed: true,
+        requiresCancellation: true,
+        appointmentId: scheduledAppt.id,
+        message:
+          'Vous avez une demande de rendez-vous en attente.\n\n' +
+          'Changer de thérapeute annulera automatiquement cette demande.\n\n' +
+          'Voulez-vous continuer ?',
+      });
+    }
+
+    // No active appointments → proceed directly
+    return res.json({
+      success: true,
+      canProceed: true,
+      requiresCancellation: false,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * STEP 2: Cancel scheduled appointment (if any) AND return matched therapists
+ *         excluding the current therapist.
+ */
+const cancelAndGetMatches = async (req, res, next) => {
+  try {
+    const { appointmentId } = req.body;
+
+    const patient = await prisma.patient.findFirst({
+      where: { userId: req.user.id },
+    });
+
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient profile not found',
+      });
+    }
+
+    // If an appointmentId is provided, cancel it using the existing logic
+    if (appointmentId) {
+      const appointment = await prisma.appointment.findUnique({
+        where: { id: appointmentId },
+        include: {
+          therapistAvailableTimeSlot: true,
+        },
+      });
+
+      if (!appointment) {
+        return res.status(404).json({
+          success: false,
+          message: 'Rendez-vous introuvable.',
+        });
+      }
+
+      // Verify ownership
+      if (appointment.patientId !== patient.id) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied',
+        });
+      }
+
+      // Only cancel scheduled appointments (not confirmed ones)
+      if (appointment.status !== 'scheduled') {
+        return res.status(400).json({
+          success: false,
+          message: 'Ce rendez-vous ne peut pas être annulé dans ce contexte.',
+        });
+      }
+
+      // Reuse the existing cancellation logic (same pattern as appointment.controller.js cancel())
+      const slotId = appointment.therapistAvailableTimeSlotId;
+      await prisma.$transaction(async (tx) => {
+        await tx.appointment.update({
+          where: { id: appointmentId },
+          data: {
+            status: 'cancelled',
+            therapistAvailableTimeSlotId: null,
+            cancelledAt: new Date(),
+            cancelledBy: req.user.id,
+            updatedAt: new Date(),
+          },
+        });
+
+        if (slotId) {
+          await tx.therapistAvailableTimeSlot.update({
+            where: { id: slotId },
+            data: { isBooked: false },
+          });
+        }
+      });
+    }
+
+    // Now fetch matched therapists, EXCLUDING the current one
+    // We reuse the existing logic but add exclusion of currentTherapistId
+    const patientFull = await prisma.patient.findFirst({
+      where: { userId: req.user.id },
+      include: {
+        consultationModes: true,
+        timeSlots: true,
+        languages: true,
+        pathologies: true,
+      },
+    });
+
+    if (!patientFull || !patientFull.onboardingCompleted) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please complete the questionnaire first',
+      });
+    }
+
+    const excludeTherapistId = patientFull.currentTherapistid;
+
+    // Get verified therapists (excluding current if applicable)
+    const therapistWhere = {
+      verificationStatus: 'verified',
+      acceptingNewPatients: true,
+    };
+    if (excludeTherapistId) {
+      therapistWhere.id = { not: excludeTherapistId };
+    }
+
+    const therapists = await prisma.therapist.findMany({
+      where: therapistWhere,
+      include: {
+        consultationModes: true,
+        timeSlots: true,
+        languages: true,
+        pathologies: true,
+        publicTypes: true,
+        user: {
+          select: { name: true },
+        },
+      },
+      orderBy: [
+        { rating: 'desc' },
+        { totalReviews: 'desc' },
+      ],
+    });
+
+    // If no therapists found after exclusion
+    if (therapists.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        noMatchesAvailable: true,
+        message:
+          'Aucun autre thérapeute compatible n\'est actuellement disponible.\n\n' +
+          'Vous pouvez conserver votre thérapeute actuel ou réessayer plus tard.',
+      });
+    }
+
+    // Extract patient preference IDs for comparison
+    const patientModeIds = new Set(patientFull.consultationModes.map(cm => cm.consultationModeId));
+    const patientSlotIds = new Set(patientFull.timeSlots.map(ts => ts.timeSlotId));
+    const patientLangIds = new Set(patientFull.languages.map(l => l.languageId));
+    const patientPathIds = new Set(patientFull.pathologies.map(p => p.pathologyId));
+
+    // Define category weights (total = 100) — SAME as getMatchedTherapists
+    const WEIGHTS = {
+      pathologies: 25,
+      languages: 20,
+      consultationModes: 15,
+      timeSlots: 10,
+      therapeuticApproach: 15,
+      genderPreference: 10,
+      sensitivity: 5,
+    };
+
+    // Calculate match scores — SAME algorithm as getMatchedTherapists
+    const matchedTherapists = therapists.map((therapist) => {
+      let matchScore = 0;
+      const matchReasons = [];
+
+      // Pathologies match (25%)
+      const therapistPathIds = new Set(therapist.pathologies.map(p => p.pathologyId));
+      const matchingPaths = [...patientPathIds].filter(id => therapistPathIds.has(id));
+      if (patientPathIds.size > 0) {
+        const pathRatio = matchingPaths.length / patientPathIds.size;
+        matchScore += pathRatio * WEIGHTS.pathologies;
+        if (matchingPaths.length > 0) {
+          matchReasons.push(`${matchingPaths.length} domaine(s) d'expertise correspondant(s)`);
+        }
+      }
+
+      // Languages match (20%)
+      const therapistLangIds = new Set(therapist.languages.map(l => l.languageId));
+      const matchingLangs = [...patientLangIds].filter(id => therapistLangIds.has(id));
+      if (patientLangIds.size > 0) {
+        const langRatio = matchingLangs.length / patientLangIds.size;
+        matchScore += langRatio * WEIGHTS.languages;
+        if (matchingLangs.length > 0) {
+          matchReasons.push(`${matchingLangs.length} langue(s) en commun`);
+        }
+      }
+
+      // Consultation modes match (15%)
+      const therapistModeIds = new Set(therapist.consultationModes.map(cm => cm.consultationModeId));
+      const matchingModes = [...patientModeIds].filter(id => therapistModeIds.has(id));
+      if (patientModeIds.size > 0) {
+        const modeRatio = matchingModes.length / patientModeIds.size;
+        matchScore += modeRatio * WEIGHTS.consultationModes;
+        if (matchingModes.length > 0) {
+          matchReasons.push(`${matchingModes.length} mode(s) de consultation en commun`);
+        }
+      }
+
+      // Time slots match (10%)
+      const therapistSlotIds = new Set(therapist.timeSlots.map(ts => ts.timeSlotId));
+      const matchingSlots = [...patientSlotIds].filter(id => therapistSlotIds.has(id));
+      if (patientSlotIds.size > 0) {
+        const slotRatio = matchingSlots.length / patientSlotIds.size;
+        matchScore += slotRatio * WEIGHTS.timeSlots;
+        if (matchingSlots.length > 0) {
+          matchReasons.push(`${matchingSlots.length} créneau(x) horaire(s) en commun`);
+        }
+      }
+
+      // Therapeutic approach match (15%)
+      if (patientFull.attentesTherapie && therapist.approcheTherapeute) {
+        const approachMatch = {
+          'ECOUTE_ACTIVE': 'HUMANISTE_GESTALT',
+          'EXERCICES_OUTILS': 'TCC',
+          'COMPRENDRE_PASSE': 'PSYCHANALYSE',
+        };
+
+        if (approachMatch[patientFull.attentesTherapie] === therapist.approcheTherapeute) {
+          matchScore += WEIGHTS.therapeuticApproach;
+          matchReasons.push('Approche thérapeutique parfaitement correspondante');
+        } else if (therapist.approcheTherapeute === 'INTEGRATIVE') {
+          matchScore += WEIGHTS.therapeuticApproach * 0.5;
+          matchReasons.push('Approche intégrative (compatible)');
+        }
+      }
+
+      // Gender preference match (10%)
+      if (patientFull.genrePref && therapist.gender) {
+        if (patientFull.genrePref === 'HOMME' && therapist.gender.toUpperCase() === 'HOMME') {
+          matchScore += WEIGHTS.genderPreference;
+          matchReasons.push('Préférence de genre respectée');
+        } else if (patientFull.genrePref === 'FEMME' && therapist.gender.toUpperCase() === 'FEMME') {
+          matchScore += WEIGHTS.genderPreference;
+          matchReasons.push('Préférence de genre respectée');
+        }
+      }
+
+      // Sensitivity/cultural match (5%)
+      if (patientFull.sensibilitePatient === 'OUI_IMPORTANT' &&
+          therapist.sensibiliteTherapeute === 'INTEGRE_DEMANDE') {
+        matchScore += WEIGHTS.sensitivity;
+        matchReasons.push('Sensibilité culturelle/spirituelle respectée');
+      }
+
+      // Rating boost (up to 5% bonus, not exceeding 100 total)
+      let ratingBoost = 0;
+      if (therapist.rating) {
+        ratingBoost = Math.min(parseFloat(therapist.rating), 5);
+      }
+
+      const finalScore = Math.min(Math.round(matchScore + ratingBoost), 100);
+
+      return {
+        id: therapist.id,
+        userId: therapist.userId,
+        name: therapist.user?.name || 'Thérapeute',
+        bio: therapist.bio,
+        profilePhotoUrl: therapist.profilePhotoUrl,
+        hourlyRate: therapist.hourlyRate ? parseFloat(therapist.hourlyRate) : null,
+        currency: therapist.currency,
+        rating: therapist.rating ? parseFloat(therapist.rating) : null,
+        totalReviews: therapist.totalReviews,
+        approcheTherapeute: therapist.approcheTherapeute,
+        sensibiliteTherapeute: therapist.sensibiliteTherapeute,
+        gender: therapist.gender,
+        matchScore: finalScore,
+        matchReasons,
+        compatibility: finalScore,
+      };
+    });
+
+    // Sort by match score descending
+    matchedTherapists.sort((a, b) => b.matchScore - a.matchScore);
+
+    res.json({
+      success: true,
+      data: matchedTherapists.slice(0, 10),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * STEP 3: Confirm the change — atomic transaction
+ *
+ * 1. Create TherapistHistory entry for the previous therapist (set unassignedAt)
+ * 2. Create TherapistHistory entry for the new therapist (assignedAt = now)
+ * 3. Update Patient.currentTherapistid
+ * 4. Notify: patient, old therapist, new therapist
+ * 5. Audit log
+ *
+ * If ANY step fails → rollback → no state change.
+ */
+const confirmChangeTherapist = async (req, res, next) => {
+  try {
+    const { newTherapistId } = req.body;
+
+    if (!newTherapistId) {
+      return res.status(400).json({
+        success: false,
+        message: 'newTherapistId is required',
+      });
+    }
+
+    // Verify new therapist exists and is accepting patients
+    const newTherapist = await prisma.therapist.findUnique({
+      where: { id: newTherapistId },
+      include: { user: { select: { id: true, name: true } } },
+    });
+
+    if (!newTherapist || newTherapist.verificationStatus !== 'verified' || !newTherapist.acceptingNewPatients) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le thérapeute sélectionné n\'est pas disponible.',
+      });
+    }
+
+    // Get patient with current therapist info
+    const patient = await prisma.patient.findFirst({
+      where: { userId: req.user.id },
+      include: {
+        currentTherapist: {
+          include: { user: { select: { id: true, name: true } } },
+        },
+        user: { select: { name: true } },
+      },
+    });
+
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient profile not found',
+      });
+    }
+
+    const oldTherapistId = patient.currentTherapistid;
+    const patientName = patient.user?.name || 'Un patient';
+
+    // If the patient already has this therapist, bail out
+    if (oldTherapistId === newTherapistId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vous êtes déjà assigné à ce thérapeute.',
+      });
+    }
+
+    // Atomic transaction
+    await prisma.$transaction(async (tx) => {
+      const now = new Date();
+
+      // 1. Close previous therapist history entry (if exists)
+      if (oldTherapistId) {
+        // Find the most recent history entry for the old therapist that is still open
+        const previousHistory = await tx.therapistHistory.findFirst({
+          where: {
+            patientId: patient.id,
+            therapistId: oldTherapistId,
+            unassignedAt: null,
+          },
+          orderBy: { assignedAt: 'desc' },
+        });
+
+        if (previousHistory) {
+          await tx.therapistHistory.update({
+            where: { id: previousHistory.id },
+            data: { unassignedAt: now },
+          });
+        } else {
+          // If no history entry exists (legacy data), create the closure entry
+          await tx.therapistHistory.create({
+            data: {
+              patientId: patient.id,
+              therapistId: oldTherapistId,
+              assignedAt: patient.updatedAt, // approximate
+              unassignedAt: now,
+            },
+          });
+        }
+      }
+
+      // 2. Create new history entry for the new therapist
+      await tx.therapistHistory.create({
+        data: {
+          patientId: patient.id,
+          therapistId: newTherapistId,
+          assignedAt: now,
+        },
+      });
+
+      // 3. Update currentTherapistid
+      await tx.patient.update({
+        where: { id: patient.id },
+        data: {
+          currentTherapistid: newTherapistId,
+          updatedAt: now,
+        },
+      });
+
+      // 4. Notifications
+      // Patient notification
+      await tx.notification.create({
+        data: {
+          id: crypto.randomUUID(),
+          userId: patient.userId,
+          type: 'therapist_changed',
+          title: 'Changement de thérapeute',
+          message: 'Votre changement de thérapeute a été effectué avec succès.',
+          actionUrl: '/patient',
+          metadata: { oldTherapistId, newTherapistId },
+          createdAt: now,
+        },
+      });
+
+      // New therapist notification
+      await tx.notification.create({
+        data: {
+          id: crypto.randomUUID(),
+          userId: newTherapist.userId,
+          type: 'patient_new_assignment',
+          title: 'Nouveau patient attribué',
+          message: `Un nouveau patient vous a été attribué.`,
+          actionUrl: '/therapist',
+          metadata: { patientId: patient.id, patientName },
+          createdAt: now,
+        },
+      });
+
+      // Old therapist notification (if exists)
+      if (oldTherapistId && patient.currentTherapist?.user?.id) {
+        await tx.notification.create({
+          data: {
+            id: crypto.randomUUID(),
+            userId: patient.currentTherapist.user.id,
+            type: 'patient_unassigned',
+            title: 'Changement de thérapeute',
+            message: `Le patient ${patientName} a choisi de poursuivre son suivi avec un autre thérapeute.`,
+            actionUrl: '/therapist',
+            metadata: { patientId: patient.id, patientName },
+            createdAt: now,
+          },
+        });
+      }
+
+      // 5. Audit log
+      await tx.auditLog.create({
+        data: {
+          actorId: req.user.id,
+          actorRole: 'patient',
+          action: 'therapist.changed',
+          resourceType: 'patient',
+          resourceId: patient.id,
+          previousValue: { currentTherapistId: oldTherapistId },
+          newValue: { currentTherapistId: newTherapistId },
+          ipAddress: req.ip,
+          userAgent: req.headers['user-agent'],
+          createdAt: now,
+        },
+      });
+    });
+
+    // Fetch updated patient for response
+    const updatedPatient = await prisma.patient.findFirst({
+      where: { userId: req.user.id },
+      include: {
+        currentTherapist: {
+          include: {
+            user: { select: { id: true, name: true, email: true } },
+          },
+        },
+      },
+    });
+
+    const transformedPatient = updatedPatient
+      ? {
+          ...updatedPatient,
+          currentTherapist: updatedPatient.currentTherapist
+            ? {
+                id: updatedPatient.currentTherapist.id,
+                userId: updatedPatient.currentTherapist.userId,
+                name: updatedPatient.currentTherapist.user?.name || null,
+                email: updatedPatient.currentTherapist.user?.email || null,
+                approcheTherapeute: updatedPatient.currentTherapist.approcheTherapeute || null,
+                profilePhotoUrl: updatedPatient.currentTherapist.profilePhotoUrl || null,
+              }
+            : null,
+        }
+      : null;
+
+    res.json({
+      success: true,
+      message: 'Changement de thérapeute effectué avec succès.',
+      data: transformedPatient,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export {
   getProfile,
   updateProfile,
@@ -801,4 +1368,7 @@ export {
   getSessionReports,
   getAllPatients,
   getPatientById,
+  initiateChangeTherapist,
+  cancelAndGetMatches,
+  confirmChangeTherapist,
 };

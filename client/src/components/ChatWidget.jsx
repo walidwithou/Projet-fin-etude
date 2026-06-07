@@ -2,7 +2,13 @@
 import { motion } from 'motion/react';
 import { Send, ArrowLeft, Image as ImageIcon, X, Loader2, AlertCircle, MessageSquare } from 'lucide-react'; 
 import { apiCall } from '../services/api';
+import { connectSocket, getSocket, isConnected } from '../services/socket';
 
+// IMPORTANT: conversationId doit être construit uniquement avec des User.id.
+// Ne jamais utiliser Patient.id ou Therapist.id.
+// Le résultat doit être déterministe : [userId1, userId2].sort().
+// Backend et frontend doivent utiliser EXACTEMENT le même algorithme.
+// Le conversationId est passé en prop depuis Patient.jsx / Therapist.jsx.
 export default function ChatWidget({ therapist, conversationId, onBack }) {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
@@ -18,6 +24,22 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
   const scrollContainerRef = useRef(null);
   const textareaRef = useRef(null);
   const lastScrollHeight = useRef(0);
+  const lastMessageTimestamp = useRef(Date.now());
+
+  // Récupérer l'id de l'utilisateur courant depuis le token JWT (ou localStorage)
+  // Fallback : on décode le token pour obtenir user.id
+  const getCurrentUserId = () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return null;
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      return payload.id || payload.sub || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const currentUserId = getCurrentUserId();
 
   // Fetch messages when conversationId changes
   useEffect(() => {
@@ -45,7 +67,6 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
         }
       } catch (err) {
         if (err.status === 404) {
-          // No conversation yet — that's fine, it will be created on first message
           setMessages([]);
         } else {
           setError(err.message || 'Erreur lors du chargement des messages');
@@ -57,6 +78,37 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
 
     fetchMessages();
   }, [conversationId]);
+
+  // Socket.IO : écouter les events temps réel
+  useEffect(() => {
+    const socket = connectSocket();
+    if (!socket) return;
+
+    // Nouveau message reçu
+    const handleNewMessage = (message) => {
+      setMessages(prev => {
+        // Éviter les doublons
+        if (prev.some(m => m.id === message.id)) return prev;
+        return [...prev, message];
+      });
+      lastMessageTimestamp.current = Date.now();
+    };
+
+    // Message marqué comme lu
+    const handleMessageRead = ({ messageId }) => {
+      setMessages(prev => prev.map(m => 
+        m.id === messageId ? { ...m, isRead: true, readAt: new Date().toISOString() } : m
+      ));
+    };
+
+    socket.on('message:new', handleNewMessage);
+    socket.on('message:read', handleMessageRead);
+
+    return () => {
+      socket.off('message:new', handleNewMessage);
+      socket.off('message:read', handleMessageRead);
+    };
+  }, []);
 
   const scrollToBottom = (behavior = "smooth") => {
     if (scrollContainerRef.current) {
@@ -160,7 +212,7 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
   const handleSendMessage = async (e) => {
     if (e) e.preventDefault();
     if (!newMessage.trim() && !selectedImage) return;
-    if (!therapist?.id && !conversationId) return;
+    if (!therapist?.userId && !conversationId) return;
 
     setSending(true);
 
@@ -169,7 +221,7 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
     const tempMsg = {
       id: tempId,
       content: newMessage.trim(),
-      senderId: 'patient',
+      senderId: currentUserId || 'current-user',
       messageType: 'text',
       createdAt: new Date().toISOString(),
     };
@@ -182,17 +234,30 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
     }
 
     try {
-      // Send via API — receiver is the therapist
-      const receiverId = therapist?.id;
+      // Déterminer le receiverId :
+      // - Si on est patient : therapist?.userId (User.id du thérapeute)
+      // - Si on est thérapeute : on reçoit patientId en prop
+      const receiverId = therapist?.userId;
+
       if (receiverId && newMessage.trim()) {
-        await apiCall('/messages', {
-          method: 'POST',
-          body: JSON.stringify({
-            receiverId,
-            content: tempMsg.content,
-            messageType: 'text',
-          }),
-        });
+        // Privilégier l'envoi via Socket.IO
+        const socket = getSocket();
+        if (socket?.connected) {
+          const payload = { receiverId, content: tempMsg.content, messageType: 'text' };
+          socket.emit('message:send', payload, (response) => {
+            // La réponse du callback est gérée par le handler Socket.IO
+          });
+        } else {
+          // Fallback HTTP
+          await apiCall('/messages', {
+            method: 'POST',
+            body: JSON.stringify({
+              receiverId,
+              content: tempMsg.content,
+              messageType: 'text',
+            }),
+          });
+        }
       }
     } catch (err) {
       console.error('Failed to send message:', err);
@@ -208,7 +273,7 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
     }
   };
 
-  // Get therapist ID from conversationId if not provided
+  // Get therapist name
   const getTherapistName = () => {
     return therapist?.name || 'Thérapeute';
   };
@@ -227,7 +292,6 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
     );
   }
 
-  // For therapist view, show patient name
   const chatPartnerName = getTherapistName();
 
   return (
@@ -301,7 +365,7 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
             )}
 
             {messages.map((msg) => {
-              const isPatient = msg.senderId === 'patient' || msg.sender === 'patient';
+              const isOwn = msg.senderId === currentUserId;
               const displayText = msg.content || msg.text;
               const displayTime = msg.createdAt 
                 ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -310,16 +374,17 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
               return (
                 <div 
                   key={msg.id} 
-                  className={`flex ${isPatient ? 'justify-end' : 'justify-start'}`}
+                  className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}
                 >
                   <div className={`max-w-[85%] p-2.5 px-3.5 rounded-2xl text-[13px] font-medium shadow-sm transition-all ${
-                    isPatient 
+                    isOwn 
                       ? 'bg-primary text-white rounded-tr-none' 
                       : 'bg-card-bg text-text-main rounded-tl-none border border-border-color'
                   }`}>
                     {displayText && <p className="leading-snug break-words whitespace-pre-wrap">{displayText}</p>}
-                    <span className={`text-[8px] block mt-1 opacity-60 font-bold ${isPatient ? 'text-right' : 'text-left'}`}>
+                    <span className={`text-[8px] block mt-1 opacity-60 font-bold ${isOwn ? 'text-right' : 'text-left'}`}>
                       {displayTime}
+                      {isOwn && msg.isRead && <span className="ml-1">✓✓</span>}
                     </span>
                   </div>
                 </div>

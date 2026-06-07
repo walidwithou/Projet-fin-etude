@@ -47,6 +47,23 @@ router.get('/appointments', authorize(['patient']), patientController.getAppoint
 // Get patient's session reports (visible to patient)
 router.get('/session-reports', authorize(['patient']), patientController.getSessionReports);
 
+// Change therapist workflow (3 steps)
+router.post(
+  '/change-therapist/initiate',
+  authorize(['patient']),
+  patientController.initiateChangeTherapist,
+);
+router.post(
+  '/change-therapist/cancel-and-matches',
+  authorize(['patient']),
+  patientController.cancelAndGetMatches,
+);
+router.post(
+  '/change-therapist/confirm',
+  authorize(['patient']),
+  patientController.confirmChangeTherapist,
+);
+
 // Admin routes
 router.get('/', authorize(['admin']), patientController.getAllPatients);
 router.get('/:id', authorize(['admin', 'therapist']), patientController.getPatientById);

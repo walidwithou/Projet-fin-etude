@@ -25,6 +25,9 @@ router.put('/:id/reschedule', authorize(['patient', 'therapist']), appointmentCo
 // Get available slots for a therapist
 router.get('/slots/:therapistId', authorize(['patient']), appointmentController.getAvailableSlots);
 
+// Get month availability (which days have bookable slots)
+router.get('/slots/:therapistId/month-availability', authorize(['patient']), appointmentController.getMonthAvailability);
+
 // Create session report for an appointment (therapist only)
 router.post('/:id/report', authorize(['therapist']), appointmentController.createSessionReport);
 

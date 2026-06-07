@@ -230,42 +230,22 @@ const getPatients = async (req, res, next) => {
       });
     }
 
-    const patientsWithAppointments = await prisma.appointment.findMany({
-      where: { therapistId: therapist.id },
-      select: { patientId: true },
-      distinct: ['patientId'],
+    // Clients actifs = patients actuellement suivis (currentTherapistid)
+    // Ne pas utiliser Appointment.therapistId : les anciens rendez-vous
+    // doivent rester dans l'historique mais ne signifient pas que le
+    // patient est encore actif chez ce thérapeute.
+    const patients = await prisma.patient.findMany({
+      where: { currentTherapistid: therapist.id },
+      include: {
+        user: { select: { name: true, email: true } },
+      },
+      orderBy: { createdAt: 'desc' },
     });
 
-    const patientIds = new Set([
-      ...patientsWithAppointments.map((a) => a.patientId),
-    ]);
-
-    if (therapist.id) {
-      const currentlyAssigned = await prisma.patient.findMany({
-        where: { currentTherapistid: therapist.id },
-        select: { id: true },
-      });
-      currentlyAssigned.forEach((p) => patientIds.add(p.id));
-    }
-
-    const patients = patientIds.size
-      ? await prisma.patient.findMany({
-          where: { id: { in: Array.from(patientIds) } },
-          include: {
-            user: { select: { name: true, email: true } },
-          },
-          orderBy: { createdAt: 'desc' },
-        })
-      : [];
-
-    const currentlyAssignedIds = new Set(
-      patients
-        .filter((p) => p.currentTherapistid === therapist.id)
-        .map((p) => p.id),
-    );
+    // Tous les patients retournés sont actifs (isCurrent = true)
     const annotated = patients.map((p) => ({
       ...p,
-      isCurrent: currentlyAssignedIds.has(p.id),
+      isCurrent: true,
     }));
 
     res.json({

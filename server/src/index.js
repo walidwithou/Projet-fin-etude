@@ -14,20 +14,16 @@ import notificationRoutes from './routes/notification.routes.js';
 import reviewRoutes from './routes/review.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 
-// Import the Prisma singleton + helpers. We use:
-//   - startupDbProbe(): blocks `listen()` until the DB has been
-//     reachable at least once. Catches bad URLs at boot instead of
-//     on the first login request.
-//   - pingDatabase(): the /health endpoint uses this to report a
-//     live DB status, not just "the server is up".
-//   - describeDbError(): keeps the raw Prisma error out of the API
-//     response and gives the client a human-readable string.
+// Import the Prisma singleton + helpers.
 import {
   prisma,
   pingDatabase,
   startupDbProbe,
   describeDbError,
 } from './db/prisma.js';
+
+// Import Socket.IO setup
+import { createSocketServer } from './socket/socket.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -46,19 +42,6 @@ app.use(express.urlencoded({ extended: true }));
 // ---------------------------------------------------------------------------
 // Health check endpoint
 // ---------------------------------------------------------------------------
-// Two flavors:
-//   GET /health      – liveness; always 200 as long as the process is
-//                      running. Used by uptime monitors and load
-//                      balancers.
-//   GET /health/ready – readiness; returns 200 only if the database
-//                      responds to `SELECT 1` within a few seconds.
-//                      This is what Kubernetes / Render / Fly should
-//                      hit before sending traffic.
-//
-// We deliberately keep `/health` cheap (no DB query) so an external
-// monitor can detect a process that is alive but stuck on a Neon
-// wake-up. `/health/ready` is the one that tells you "the app is
-// actually serving traffic".
 
 app.get('/health', (req, res) => {
   res.json({
@@ -78,10 +61,6 @@ app.get('/health/ready', async (req, res) => {
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
-    // 503 (Service Unavailable) is the right code: "I am running but
-    // a downstream dependency is not ready". Liveness probes will
-    // keep us in the load-balancer rotation, but readiness probes
-    // will pull us out until the DB is back.
     res.status(503).json({
       status: 'degraded',
       database: 'unreachable',
@@ -106,9 +85,6 @@ app.use((err, req, res, next) => {
   console.error('Error:', err.message);
   console.error('Stack:', err.stack);
 
-  // Detect "database is waking up / pool is empty" symptoms and return
-  // a 503 (Service Unavailable) with Retry-After, so the frontend's
-  // fetch layer can back off and retry instead of giving up.
   const msg = String(err.message || '');
   const isDbUnreachable =
     /Can'?t reach database server/i.test(msg) ||
@@ -140,16 +116,12 @@ app.use((req, res) => {
   });
 });
 
+// Stocker l'instance io pour export après boot
+let io = null;
+
 // ---------------------------------------------------------------------------
 // Boot sequence
 // ---------------------------------------------------------------------------
-// 1. Probe the database. If it is unreachable after our retries, log
-//    a clear message and exit. We do NOT `listen()` on a half-broken
-//    app — the supervisor (nodemon / pm2 / systemd) will restart us
-//    and the next attempt may hit a warmed-up Neon.
-// 2. Only then bind to the port.
-// 3. On SIGTERM/SIGINT, gracefully close Prisma so Neon doesn't
-//    see a half-closed connection during shutdown.
 
 const boot = async () => {
   const probe = await startupDbProbe({ retries: 5, delayMs: 2000 });
@@ -170,6 +142,9 @@ const boot = async () => {
     console.log(`Readiness : http://localhost:${PORT}/health/ready`);
   });
 
+  // Attacher Socket.IO au serveur HTTP
+  io = createSocketServer(server);
+
   const shutdown = async (signal) => {
     console.log(`\n[shutdown] received ${signal}, closing server...`);
     server.close(() => console.log('[shutdown] http server closed'));
@@ -188,4 +163,5 @@ const boot = async () => {
 
 boot();
 
+export { io };
 export default app;

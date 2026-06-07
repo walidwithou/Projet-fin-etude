@@ -58,7 +58,11 @@ const mergeUserWithProfile = (user, profile) => {
   if (!user) return user;
   if (!profile) return { ...user };
 
-  const merged = { ...user, ...profile };
+  // Merge profile fields into user, BUT preserve the original User.id
+  // (UUID). `profile.id` is the Patient.id or Therapist.id (CUID) and
+  // must never overwrite user.id, which is the global User identifier
+  // used for messaging (conversationId) and session lookups.
+  const merged = { ...user, ...profile, id: user.id };
   // The profile object IS the source of truth for these fields.
   // Overwrite any stale value the server might have echoed in `user`.
   if (profile.verificationStatus !== undefined) {

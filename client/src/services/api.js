@@ -130,6 +130,10 @@ export const appointment = {
     return apiCall(`/appointments/slots/${therapistId}${params}`);
   },
 
+  getMonthAvailability: (therapistId, year, month) => {
+    return apiCall(`/appointments/slots/${therapistId}/month-availability?year=${year}&month=${month}`);
+  },
+
   createSessionReport: (id, data) => apiCall(`/appointments/${id}/report`, {
     method: 'POST',
     body: JSON.stringify(data),
@@ -166,6 +170,21 @@ export const patient = {
   getAppointments: () => apiCall('/patients/appointments'),
 
   getSessionReports: () => apiCall('/patients/session-reports'),
+
+  // Change therapist workflow (3 steps)
+  initiateChangeTherapist: () => apiCall('/patients/change-therapist/initiate', {
+    method: 'POST',
+  }),
+
+  cancelAndGetMatches: (appointmentId) => apiCall('/patients/change-therapist/cancel-and-matches', {
+    method: 'POST',
+    body: JSON.stringify({ appointmentId }),
+  }),
+
+  confirmChangeTherapist: (newTherapistId) => apiCall('/patients/change-therapist/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ newTherapistId }),
+  }),
 };
 
 /**

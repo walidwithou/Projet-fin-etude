@@ -25,7 +25,9 @@ import {
   CheckCircle2,
   XCircle,
   Trash2,
-  CheckCheck
+  CheckCheck,
+  UserCheck,
+  Target
 } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
@@ -114,6 +116,21 @@ const getStatusColor = (status) => {
   return colors[status] || 'text-text-muted bg-bg-main border-border-color';
 };
 
+/**
+ * Génère un conversationId déterministe basé sur deux User.id triés.
+ * Identique à la logique backend dans message.controller.js
+ * 
+ * IMPORTANT: conversationId doit être construit uniquement avec des User.id.
+ * Ne jamais utiliser Patient.id ou Therapist.id.
+ * Le résultat doit être déterministe : [userId1, userId2].sort().
+ * Backend et frontend doivent utiliser EXACTEMENT le même algorithme.
+ */
+const getConversationId = (userId1, userId2) => {
+  if (!userId1 || !userId2) return undefined;
+  const sorted = [userId1, userId2].sort();
+  return `conv_${sorted[0]}_${sorted[1]}`;
+};
+
 const getStatusLabel = (status) => {
   const labels = {
     scheduled: 'Programmé',
@@ -160,9 +177,18 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
 
   const [showChangeTherapistConfirm, setShowChangeTherapistConfirm] = useState(false);
   
+  // Change therapist workflow states
+  const [changeTherapistStep, setChangeTherapistStep] = useState('idle'); // idle | checking | warning | results | confirming
+  const [changeTherapistInitData, setChangeTherapistInitData] = useState(null);
+  const [matchedTherapists, setMatchedTherapists] = useState([]);
+  const [changeTherapistLoading, setChangeTherapistLoading] = useState(false);
+  const [changeTherapistError, setChangeTherapistError] = useState('');
+  const [selectedNewTherapist, setSelectedNewTherapist] = useState(null);
+  
   const todayDate = new Date();
   const [currentMonth, setCurrentMonth] = useState(todayDate.getMonth());
   const [currentYear, setCurrentYear] = useState(todayDate.getFullYear());
+  const [availableDatesSet, setAvailableDatesSet] = useState(new Set());
 
   // Load data on mount.
   //
@@ -196,6 +222,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
         if (profile.currentTherapist && profile.currentTherapist.name) {
           setTherapistInfo({
             id: profile.currentTherapist.id,
+            userId: profile.currentTherapist.userId, // User.id du thérapeute (pour l'envoi de messages)
             name: profile.currentTherapist.name,
             speciality: profile.currentTherapist.approcheTherapeute || 'Psychologue',
             profilePhotoUrl: profile.currentTherapist.profilePhotoUrl || null,
@@ -205,9 +232,11 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
           const appWithTherapist = apps.find(
             (a) => a.therapistId === profile.currentTherapistid,
           );
+          console.log('Fallback appointment therapist:', appWithTherapist);
           if (appWithTherapist && appWithTherapist.therapist?.user?.name) {
             setTherapistInfo({
               id: appWithTherapist.therapistId,
+              userId: appWithTherapist.therapist.user.id, // User.id du thérapeute
               name: appWithTherapist.therapist.user.name,
               speciality:
                 appWithTherapist.therapist.approcheTherapeute || 'Psychologue',
@@ -218,9 +247,11 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
               const therapistRes = await publicApi.getTherapistProfile(
                 profile.currentTherapistid,
               );
+              console.log('Fallback public therapist:', therapistRes.data);
               if (therapistRes.data) {
                 setTherapistInfo({
                   id: profile.currentTherapistid,
+                  userId: therapistRes.data.user?.id || profile.currentTherapistid,
                   name:
                     therapistRes.data.user?.name ||
                     therapistRes.data.name ||
@@ -235,7 +266,13 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
           }
         } else if (currentTherapist && currentTherapist.name) {
           // 4) Pre-onboarding fallback (e.g. coming from Registration)
-          setTherapistInfo(currentTherapist);
+          console.log('Fallback currentTherapist prop:', currentTherapist);
+          setTherapistInfo({
+            id: currentTherapist.id,
+            userId: currentTherapist.userId || currentTherapist.id,
+            name: currentTherapist.name,
+            speciality: currentTherapist.speciality || currentTherapist.approcheTherapeute || 'Psychologue',
+          });
         }
       } catch (err) {
         setError(err.message || 'Erreur lors du chargement des données');
@@ -272,6 +309,29 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
     };
     fetchSlots();
   }, [selectedDate, therapistInfo?.id]);
+
+  // Fetch which days in the current month have bookable slots
+  useEffect(() => {
+    if (!therapistInfo?.id) {
+      setAvailableDatesSet(new Set());
+      return;
+    }
+
+    const fetchMonthAvailability = async () => {
+      try {
+        const res = await appointmentApi.getMonthAvailability(
+          therapistInfo.id,
+          currentYear,
+          currentMonth + 1, // API expects 1-based month
+        );
+        setAvailableDatesSet(new Set(res.data || []));
+      } catch (err) {
+        // Non-fatal: fall back to empty set (all days appear unavailable)
+        setAvailableDatesSet(new Set());
+      }
+    };
+    fetchMonthAvailability();
+  }, [therapistInfo?.id, currentYear, currentMonth]);
 
   const handleRateSession = async (appointmentId, rating, comment) => {
     setRatingLoading(true);
@@ -450,6 +510,15 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
     return null;
   }, [therapistInfo, currentTherapist]);
 
+  // Computed conversation ID for the chat widget
+  // Note : on utilise user?.id depuis AuthContext car le backend utilise
+  // des tokens de session hexadécimaux (pas des JWT). L'ancien code
+  // qui faisait atob(token.split('.')[1]) échouait silencieusement.
+  const patientConvId = useMemo(() => {
+    const currentUserId = user?.id || null;
+    return getConversationId(therapist?.userId, currentUserId);
+  }, [therapist?.userId, user?.id]);
+
   // Safe-to-render name for the assigned therapist. Never null.
   // Used in copy where the therapist is mentioned (toast, modal copy...).
   // When no therapist is assigned, we fall back to a neutral phrase
@@ -505,11 +574,12 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
     };
   }, [currentYear, currentMonth]);
 
-  // Check if a date has available slots
+  // Check if a date has available slots using the fetched month availability data
   const dateHasSlots = useCallback((year, month, day) => {
-    // We don't know in advance, so we just check if it's a future date
-    return !isPastDate(year, month, day);
-  }, []);
+    if (isPastDate(year, month, day)) return false;
+    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    return availableDatesSet.has(dateStr);
+  }, [availableDatesSet]);
 
   const handleCompleteBooking = async () => {
     if (!selectedDate || !selectedTimeSlot || !selectedSlotId || !therapistInfo?.id) {
@@ -758,7 +828,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
             <AnimatePresence mode="wait">
               {activeTab === 'chat' && (
                 <div className="flex-1 flex flex-col min-h-0">
-                  <ChatWidget therapist={therapist || undefined} />
+                  <ChatWidget therapist={therapist || undefined} conversationId={patientConvId} />
                 </div>
               )}
 
@@ -1535,7 +1605,7 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
         </main>
       </div>
 
-      {/* Change Therapist Confirmation Modal */}
+      {/* Change Therapist Full Workflow Modal */}
       <AnimatePresence>
         {showChangeTherapistConfirm && (
           <>
@@ -1543,7 +1613,14 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setShowChangeTherapistConfirm(false)}
+              onClick={() => {
+                setShowChangeTherapistConfirm(false);
+                setChangeTherapistStep('idle');
+                setChangeTherapistInitData(null);
+                setMatchedTherapists([]);
+                setSelectedNewTherapist(null);
+                setChangeTherapistError('');
+              }}
               className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999] flex items-center justify-center p-4 cursor-pointer"
             >
               <motion.div
@@ -1551,71 +1628,460 @@ export default function Patient({ onNavigateToPage, currentTherapist }) {
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 15 }}
                 onClick={(e) => e.stopPropagation()}
-                className="bg-card-bg w-full max-w-lg border border-border-color rounded-[2.5rem] shadow-2xl overflow-hidden relative cursor-default p-8 md:p-10 text-left"
+                className="bg-card-bg w-full max-w-3xl border border-border-color rounded-[2.5rem] shadow-2xl relative cursor-default p-8 md:p-10 text-left max-h-[90vh] overflow-y-auto"
               >
                 <button
                   type="button"
-                  onClick={() => setShowChangeTherapistConfirm(false)}
+                  onClick={() => {
+                    setShowChangeTherapistConfirm(false);
+                    setChangeTherapistStep('idle');
+                    setChangeTherapistInitData(null);
+                    setMatchedTherapists([]);
+                    setSelectedNewTherapist(null);
+                    setChangeTherapistError('');
+                  }}
                   className="absolute top-6 right-6 p-2 bg-text-muted/10 hover:bg-red-500 hover:text-white rounded-xl transition-all cursor-pointer shadow-sm border border-border-color text-text-muted"
                 >
                   <X size={16} />
                 </button>
 
-                <div className="mb-6 flex items-center gap-3">
-                  <div className="p-3 bg-amber-500/10 text-amber-600 rounded-2xl">
-                    <AlertTriangle size={22} />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-black text-text-main">Changer de thérapeute</h3>
-                    <p className="text-xs text-text-muted mt-0.5 font-semibold">Confirmation de votre choix</p>
-                  </div>
-                </div>
-
-                <div className="space-y-6">
-                  <div className="p-4 bg-amber-500/5 border border-amber-500/10 rounded-2xl space-y-1.5">
-                    <p className="text-xs text-amber-700 dark:text-amber-400 font-extrabold leading-tight">
-                      Êtes-vous sûr de vouloir changer de thérapeute ?
-                    </p>
-                    <p className="text-[11px] text-text-muted leading-relaxed font-semibold">
-                      Cette action vous dissociera de votre praticien actuel.
-                    </p>
-                  </div>
-
-                  {therapist && (
-                    <div className="space-y-2">
-                      <h4 className="text-[10px] font-black uppercase tracking-widest text-primary">Votre thérapeute actuel</h4>
-                      <div className="p-5 bg-bg-main border border-border-color rounded-2xl flex items-center gap-4">
-                        <div className="w-14 h-14 bg-primary-light rounded-2xl flex items-center justify-center text-primary font-black text-2xl shadow-inner border-2 border-card-bg">
-                          {therapist.name ? therapist.name.charAt(0).toUpperCase() : 'T'}
-                        </div>
-                        <div>
-                          <h5 className="font-bold text-text-main text-base">{therapist.name}</h5>
-                          <p className="text-primary text-xs font-bold uppercase tracking-wider">{therapist.speciality || 'Psychologue'}</p>
-                        </div>
+                {/* STEP: idle — initial confirmation */}
+                {changeTherapistStep === 'idle' && (
+                  <>
+                    <div className="mb-6 flex items-center gap-3">
+                      <div className="p-3 bg-amber-500/10 text-amber-600 rounded-2xl">
+                        <AlertTriangle size={22} />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-black text-text-main">Changer de thérapeute</h3>
+                        <p className="text-xs text-text-muted mt-0.5 font-semibold">Vérification de vos rendez-vous</p>
                       </div>
                     </div>
-                  )}
 
-                  <div className="flex gap-4 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowChangeTherapistConfirm(false)}
-                      className="flex-1 py-3 bg-bg-main text-text-muted rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase border border-border-color cursor-pointer text-center"
-                    >
-                      Conserver
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowChangeTherapistConfirm(false);
-                        onNavigateToPage('REGISTRATION', { mode: 'RESULTS' });
-                      }}
-                      className="flex-1 py-3 bg-primary text-white rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-primary/25 cursor-pointer text-center"
-                    >
-                      Confirmer le changement
-                    </button>
+                    <div className="space-y-6">
+                      <div className="p-4 bg-amber-500/5 border border-amber-500/10 rounded-2xl space-y-1.5">
+                        <p className="text-xs text-amber-700 dark:text-amber-400 font-extrabold leading-tight">
+                          Êtes-vous sûr de vouloir changer de thérapeute ?
+                        </p>
+                        <p className="text-[11px] text-text-muted leading-relaxed font-semibold">
+                          Cette action vous dissociera de votre praticien actuel.
+                        </p>
+                      </div>
+
+                      {therapist && (
+                        <div className="space-y-2">
+                          <h4 className="text-[10px] font-black uppercase tracking-widest text-primary">Votre thérapeute actuel</h4>
+                          <div className="p-5 bg-bg-main border border-border-color rounded-2xl flex items-center gap-4">
+                            <div className="w-14 h-14 bg-primary-light rounded-2xl flex items-center justify-center text-primary font-black text-2xl shadow-inner border-2 border-card-bg">
+                              {therapist.name ? therapist.name.charAt(0).toUpperCase() : 'T'}
+                            </div>
+                            <div>
+                              <h5 className="font-bold text-text-main text-base">{therapist.name}</h5>
+                              <p className="text-primary text-xs font-bold uppercase tracking-wider">{therapist.speciality || 'Psychologue'}</p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {changeTherapistError && (
+                        <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl">
+                          <p className="text-xs font-bold text-red-600">{changeTherapistError}</p>
+                        </div>
+                      )}
+
+                      <div className="flex gap-4 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowChangeTherapistConfirm(false);
+                            setChangeTherapistStep('idle');
+                          }}
+                          className="flex-1 py-3 bg-bg-main text-text-muted rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase border border-border-color cursor-pointer text-center"
+                        >
+                          Annuler
+                        </button>
+                        <button
+                          type="button"
+                          disabled={changeTherapistLoading}
+                          onClick={async () => {
+                            setChangeTherapistLoading(true);
+                            setChangeTherapistError('');
+                            try {
+                              const res = await patientApi.initiateChangeTherapist();
+                              if (!res.canProceed && res.reason === 'confirmed_appointment') {
+                                // BLOCKED: confirmed appointment
+                                setChangeTherapistStep('blocked');
+                                setChangeTherapistInitData(res);
+                              } else if (res.requiresCancellation) {
+                                // WARN: scheduled appointment
+                                setChangeTherapistStep('warning');
+                                setChangeTherapistInitData(res);
+                              } else {
+                                // PROCEED: no active appointments
+                                setChangeTherapistStep('loading');
+                                // Directly fetch matches
+                                const matchesRes = await patientApi.cancelAndGetMatches(null);
+                                setMatchedTherapists(matchesRes.data || []);
+                                if (matchesRes.noMatchesAvailable) {
+                                  setChangeTherapistStep('no_matches');
+                                  setChangeTherapistInitData(matchesRes);
+                                } else {
+                                  setChangeTherapistStep('results');
+                                }
+                              }
+                            } catch (err) {
+                              setChangeTherapistError(err.message || 'Erreur lors de la vérification');
+                            } finally {
+                              setChangeTherapistLoading(false);
+                            }
+                          }}
+                          className="flex-1 py-3 bg-primary text-white rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-primary/25 cursor-pointer text-center disabled:opacity-40 flex items-center justify-center gap-2"
+                        >
+                          {changeTherapistLoading ? (
+                            <><Loader2 size={14} className="animate-spin" /> Vérification...</>
+                          ) : (
+                            'Continuer'
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* STEP: blocked — confirmed appointment */}
+                {changeTherapistStep === 'blocked' && (
+                  <>
+                    <div className="mb-6 flex items-center gap-3">
+                      <div className="p-3 bg-red-500/10 text-red-600 rounded-2xl">
+                        <XCircle size={22} />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-black text-text-main">Changement impossible</h3>
+                        <p className="text-xs text-text-muted mt-0.5 font-semibold">Rendez-vous confirmé en cours</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-6">
+                      <div className="p-5 bg-red-500/5 border border-red-500/20 rounded-2xl">
+                        <p className="text-sm text-text-main font-semibold leading-relaxed whitespace-pre-line">
+                          {changeTherapistInitData?.message || 'Vous avez un rendez-vous confirmé avec votre thérapeute actuel.'}
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowChangeTherapistConfirm(false);
+                          setChangeTherapistStep('idle');
+                        }}
+                        className="w-full py-3 bg-primary text-white rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-primary/25 cursor-pointer text-center"
+                      >
+                        Fermer
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* STEP: warning — scheduled appointment needs cancellation */}
+                {changeTherapistStep === 'warning' && (
+                  <>
+                    <div className="mb-6 flex items-center gap-3">
+                      <div className="p-3 bg-amber-500/10 text-amber-600 rounded-2xl">
+                        <AlertTriangle size={22} />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-black text-text-main">Demande de rendez-vous en attente</h3>
+                        <p className="text-xs text-text-muted mt-0.5 font-semibold">Confirmation requise</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-6">
+                      <div className="p-5 bg-amber-500/5 border border-amber-500/20 rounded-2xl">
+                        <p className="text-sm text-text-main font-semibold leading-relaxed whitespace-pre-line">
+                          {changeTherapistInitData?.message || 'Vous avez une demande de rendez-vous en attente.'}
+                        </p>
+                      </div>
+
+                      <div className="flex gap-4 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setChangeTherapistStep('idle');
+                          }}
+                          className="flex-1 py-3 bg-bg-main text-text-muted rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase border border-border-color cursor-pointer text-center"
+                        >
+                          Annuler
+                        </button>
+                        <button
+                          type="button"
+                          disabled={changeTherapistLoading}
+                          onClick={async () => {
+                            setChangeTherapistLoading(true);
+                            setChangeTherapistError('');
+                            try {
+                              const matchesRes = await patientApi.cancelAndGetMatches(
+                                changeTherapistInitData.appointmentId,
+                              );
+                              setMatchedTherapists(matchesRes.data || []);
+                              if (matchesRes.noMatchesAvailable) {
+                                setChangeTherapistStep('no_matches');
+                                setChangeTherapistInitData(matchesRes);
+                              } else {
+                                setChangeTherapistStep('results');
+                              }
+                            } catch (err) {
+                              setChangeTherapistError(err.message || 'Erreur lors de l\'annulation');
+                            } finally {
+                              setChangeTherapistLoading(false);
+                            }
+                          }}
+                          className="flex-1 py-3 bg-primary text-white rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-primary/25 cursor-pointer text-center disabled:opacity-40 flex items-center justify-center gap-2"
+                        >
+                          {changeTherapistLoading ? (
+                            <><Loader2 size={14} className="animate-spin" /> Annulation en cours...</>
+                          ) : (
+                            'Continuer'
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* STEP: loading — fetching matches */}
+                {changeTherapistStep === 'loading' && (
+                  <div className="py-12 text-center">
+                    <Loader2 size={32} className="animate-spin text-primary mx-auto mb-4" />
+                    <p className="text-text-muted font-bold">Recherche des thérapeutes disponibles...</p>
                   </div>
-                </div>
+                )}
+
+                {/* STEP: no_matches — no therapists available after exclusion */}
+                {changeTherapistStep === 'no_matches' && (
+                  <>
+                    <div className="mb-6 flex items-center gap-3">
+                      <div className="p-3 bg-amber-500/10 text-amber-600 rounded-2xl">
+                        <AlertTriangle size={22} />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-black text-text-main">Aucun thérapeute disponible</h3>
+                        <p className="text-xs text-text-muted mt-0.5 font-semibold">Aucune correspondance trouvée</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-6">
+                      <div className="p-5 bg-amber-500/5 border border-amber-500/20 rounded-2xl">
+                        <p className="text-sm text-text-main font-semibold leading-relaxed whitespace-pre-line">
+                          {changeTherapistInitData?.message || 'Aucun autre thérapeute compatible n\'est actuellement disponible.'}
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowChangeTherapistConfirm(false);
+                          setChangeTherapistStep('idle');
+                        }}
+                        className="w-full py-3 bg-primary text-white rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-primary/25 cursor-pointer text-center"
+                      >
+                        Fermer
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* STEP: results — show matched therapists */}
+                {changeTherapistStep === 'results' && (
+                  <>
+                    <div className="mb-6 flex items-center gap-3">
+                      <div className="p-3 bg-primary/10 text-primary rounded-2xl">
+                        <UserCheck size={22} />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-black text-text-main">Nouveaux thérapeutes disponibles</h3>
+                        <p className="text-xs text-text-muted mt-0.5 font-semibold">
+                          {matchedTherapists.length} correspondance{matchedTherapists.length > 1 ? 's' : ''} trouvée{matchedTherapists.length > 1 ? 's' : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                      {matchedTherapists.map((therapist, i) => (
+                        <motion.div
+                          key={therapist.id || i}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: i * 0.05 }}
+                          onClick={() => setSelectedNewTherapist(therapist)}
+                          className={`p-5 border-2 rounded-2xl flex items-center gap-4 transition-all cursor-pointer ${
+                            selectedNewTherapist?.id === therapist.id
+                              ? 'border-primary bg-primary/5 shadow-md shadow-primary/10'
+                              : 'border-border-color bg-bg-main hover:border-primary/40'
+                          }`}
+                        >
+                          <div className="w-14 h-14 bg-primary-light rounded-2xl flex items-center justify-center text-primary font-black text-2xl shadow-inner border-2 border-card-bg shrink-0">
+                            {therapist.name ? therapist.name.charAt(0).toUpperCase() : 'T'}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h4 className="font-bold text-text-main text-sm">{therapist.name || 'Thérapeute'}</h4>
+                              <span className="text-[10px] px-2 py-0.5 bg-green-500/10 text-green-600 font-bold rounded-full">
+                                Vérifié
+                              </span>
+                            </div>
+                            <p className="text-xs text-text-muted mt-0.5">
+                              {therapist.approcheTherapeute ? (
+                                <>
+                                  {therapist.approcheTherapeute === 'TCC' && 'Thérapie Cognitivo-Comportementale'}
+                                  {therapist.approcheTherapeute === 'PSYCHANALYSE' && 'Psychanalyse'}
+                                  {therapist.approcheTherapeute === 'HUMANISTE_GESTALT' && 'Humaniste / Gestalt'}
+                                  {therapist.approcheTherapeute === 'INTEGRATIVE' && 'Approche Intégrative'}
+                                </>
+                              ) : ''}
+                            </p>
+                            {therapist.matchReasons && therapist.matchReasons.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-1.5">
+                                {therapist.matchReasons.slice(0, 2).map((reason, idx) => (
+                                  <span key={idx} className="text-[9px] px-2 py-0.5 bg-primary/5 rounded-full text-primary font-medium">
+                                    {reason}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-center gap-1 shrink-0">
+                            <div className="flex items-center gap-1 text-primary">
+                              <Target size={14} />
+                              <span className="font-bold text-base">{therapist.compatibility || therapist.matchScore || 0}%</span>
+                            </div>
+                            {selectedNewTherapist?.id === therapist.id && (
+                              <CheckCircle2 size={20} className="text-primary" />
+                            )}
+                          </div>
+                        </motion.div>
+                      ))}
+                    </div>
+
+                    {changeTherapistError && (
+                      <div className="p-3 mt-4 bg-red-500/10 border border-red-500/30 rounded-xl">
+                        <p className="text-xs font-bold text-red-600">{changeTherapistError}</p>
+                      </div>
+                    )}
+
+                    <div className="flex gap-4 pt-6 border-t border-border-color/30 mt-6">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setChangeTherapistStep('idle');
+                          setSelectedNewTherapist(null);
+                        }}
+                        className="flex-1 py-3 bg-bg-main text-text-muted rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase border border-border-color cursor-pointer text-center"
+                      >
+                        Retour
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!selectedNewTherapist || changeTherapistLoading}
+                        onClick={async () => {
+                          if (!selectedNewTherapist) return;
+                          setChangeTherapistLoading(true);
+                          setChangeTherapistError('');
+                          try {
+                            const res = await patientApi.confirmChangeTherapist(selectedNewTherapist.id);
+                            if (res.success) {
+                              // Update local state
+                              if (res.data) {
+                                setPatientProfile(res.data);
+                                if (res.data.currentTherapist) {
+                                  setTherapistInfo({
+                                    id: res.data.currentTherapist.id,
+                                    name: res.data.currentTherapist.name,
+                                    speciality: res.data.currentTherapist.approcheTherapeute || 'Psychologue',
+                                    profilePhotoUrl: res.data.currentTherapist.profilePhotoUrl || null,
+                                  });
+                                }
+                              }
+                              setChangeTherapistStep('done');
+                            }
+                          } catch (err) {
+                            setChangeTherapistError(err.message || 'Erreur lors du changement');
+                          } finally {
+                            setChangeTherapistLoading(false);
+                          }
+                        }}
+                        className="flex-1 py-3 bg-primary text-white rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-primary/25 cursor-pointer text-center disabled:opacity-40 flex items-center justify-center gap-2"
+                      >
+                        {changeTherapistLoading ? (
+                          <><Loader2 size={14} className="animate-spin" /> Confirmation...</>
+                        ) : !selectedNewTherapist ? (
+                          'Sélectionnez un thérapeute'
+                        ) : (
+                          'Confirmer la mise en relation'
+                        )}
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* STEP: done — success confirmation */}
+                {changeTherapistStep === 'done' && (
+                  <>
+                    <div className="mb-6 flex items-center gap-3">
+                      <div className="p-3 bg-green-500/10 text-green-600 rounded-2xl">
+                        <CheckCircle2 size={22} />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-black text-text-main">Changement effectué !</h3>
+                        <p className="text-xs text-text-muted mt-0.5 font-semibold">Votre nouveau thérapeute</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-6">
+                      <div className="p-5 bg-green-500/5 border border-green-500/20 rounded-2xl">
+                        <p className="text-sm text-text-main font-semibold leading-relaxed">
+                          Votre changement de thérapeute a été effectué avec succès.
+                        </p>
+                      </div>
+
+                      {selectedNewTherapist && (
+                        <div className="p-5 bg-bg-main border border-border-color rounded-2xl flex items-center gap-4">
+                          <div className="w-14 h-14 bg-primary-light rounded-2xl flex items-center justify-center text-primary font-black text-2xl shadow-inner border-2 border-card-bg">
+                            {selectedNewTherapist.name ? selectedNewTherapist.name.charAt(0).toUpperCase() : 'T'}
+                          </div>
+                          <div>
+                            <h5 className="font-bold text-text-main text-base">{selectedNewTherapist.name}</h5>
+                            <p className="text-primary text-xs font-bold uppercase tracking-wider">{selectedNewTherapist.approcheTherapeute || 'Psychologue'}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowChangeTherapistConfirm(false);
+                          setChangeTherapistStep('idle');
+                          setSelectedNewTherapist(null);
+                          setMatchedTherapists([]);
+                          // Refresh data
+                          const reloadData = async () => {
+                            try {
+                              const [profileRes, appointmentsRes] = await Promise.all([
+                                patientApi.getProfile(),
+                                patientApi.getAppointments(),
+                              ]);
+                              setPatientProfile(profileRes.data);
+                              setAppointments(appointmentsRes.data || []);
+                            } catch (_) {}
+                          };
+                          reloadData();
+                        }}
+                        className="w-full py-3 bg-primary text-white rounded-xl transition-all text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-primary/25 cursor-pointer text-center"
+                      >
+                        Terminé
+                      </button>
+                    </div>
+                  </>
+                )}
               </motion.div>
             </motion.div>
           </>

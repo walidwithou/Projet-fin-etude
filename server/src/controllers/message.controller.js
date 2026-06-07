@@ -1,4 +1,5 @@
 import { prisma } from '../db/prisma.js';
+import { getIO } from '../socket/socket.js';
 import crypto from 'crypto';
 
 const generateId = () => crypto.randomUUID();
@@ -27,14 +28,13 @@ const getConversations = async (req, res, next) => {
 
       const unreadCount = await prisma.message.count({
         where: {
-          conversationId: msg.conversationId,
           receiverId: req.user.id,
           isRead: false,
         },
       });
 
       // Get the other participant
-      const otherUserId = lastMessage.senderId === req.user.id ? lastMessage.receiverId : lastMessage.senderId;
+      const otherUserId = lastMessage?.senderId === req.user.id ? lastMessage.receiverId : lastMessage?.senderId;
 
       conversations.push({
         conversationId: msg.conversationId,
@@ -54,7 +54,7 @@ const getConversations = async (req, res, next) => {
 };
 
 /**
- * Get messages in a conversation
+ * Get messages in a conversation (by roomId)
  */
 const getMessages = async (req, res, next) => {
   try {
@@ -89,7 +89,7 @@ const getMessages = async (req, res, next) => {
 
     res.json({
       success: true,
-      data: messages.reverse(), // Return in chronological order
+      data: messages.reverse(),
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -103,8 +103,40 @@ const getMessages = async (req, res, next) => {
 };
 
 /**
- * Send a message
+ * Vérifie si un utilisateur a le droit d'envoyer un message.
+ * PATIENT → uniquement son currentTherapist
+ * THÉRAPEUTE → uniquement ses patients actifs
  */
+const canMessage = async (senderId, receiverId, role) => {
+  if (role === 'patient') {
+    const patient = await prisma.patient.findFirst({
+      where: { userId: senderId },
+      select: { currentTherapistid: true },
+    });
+    const therapist = await prisma.therapist.findFirst({
+      where: { userId: receiverId },
+      select: { id: true },
+    });
+    if (!patient || !therapist) return false;
+    return patient.currentTherapistid === therapist.id;
+  }
+
+  if (role === 'therapist') {
+    const therapist = await prisma.therapist.findFirst({
+      where: { userId: senderId },
+      select: { id: true },
+    });
+    const patient = await prisma.patient.findFirst({
+      where: { userId: receiverId },
+      select: { currentTherapistid: true },
+    });
+    if (!therapist || !patient) return false;
+    return patient.currentTherapistid === therapist.id;
+  }
+
+  return false;
+};
+
 const send = async (req, res, next) => {
   try {
     const { receiverId, content, messageType } = req.body;
@@ -116,7 +148,20 @@ const send = async (req, res, next) => {
       });
     }
 
-    // Generate or find conversation ID (sorted user IDs to ensure consistency)
+    // Validation métier
+    const allowed = await canMessage(req.user.id, receiverId, req.role);
+    if (!allowed) {
+      return res.status(403).json({
+        success: false,
+        message: 'Vous ne pouvez pas envoyer un message à cet utilisateur',
+      });
+    }
+
+    // IMPORTANT: conversationId doit être construit uniquement avec des User.id.
+    // Ne jamais utiliser Patient.id ou Therapist.id.
+    // Le résultat doit être déterministe : [userId1, userId2].sort().
+    // Backend et frontend doivent utiliser EXACTEMENT le même algorithme.
+    // Generate conversation ID (sorted user IDs)
     const sortedIds = [req.user.id, receiverId].sort();
     const conversationId = `conv_${sortedIds[0]}_${sortedIds[1]}`;
 
@@ -132,16 +177,31 @@ const send = async (req, res, next) => {
     });
 
     // Create notification for receiver
-    await prisma.notification.create({
+    const notification = await prisma.notification.create({
       data: {
         id: generateId(),
         userId: receiverId,
         type: 'message',
-        title: 'New Message',
-        message: `You have a new message`,
+        title: 'Nouveau message',
+        message: 'Vous avez reçu un nouveau message',
         actionUrl: `/messages/${conversationId}`,
       },
     });
+
+    const unreadCount = await prisma.message.count({
+      where: { receiverId, isRead: false },
+    });
+
+    // Émettre les events Socket.IO
+    const io = getIO();
+    if (io) {
+      io.to(`user:${receiverId}`).emit('message:new', message);
+      io.to(`user:${receiverId}`).emit('notification:new', notification);
+      io.to(`user:${receiverId}`).emit('unread:count', { count: Number(unreadCount) });
+      io.to(`user:${req.user.id}`).emit('message:new', message);
+      io.to(`user:${receiverId}`).emit('conversation:updated', { conversationId });
+      io.to(`user:${req.user.id}`).emit('conversation:updated', { conversationId });
+    }
 
     res.status(201).json({
       success: true,

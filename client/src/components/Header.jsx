@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { User, Settings, HelpCircle, LogOut, ChevronDown, Moon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import LeafKeyIcon from './LeafKeyIcon';
+import NotificationCenter from './NotificationCenter';
 
 export default function Header({ onLogin, onAbout, onHome, user, onLogout, onNavigateToPage }) {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -15,11 +16,13 @@ export default function Header({ onLogin, onAbout, onHome, user, onLogout, onNav
         <span className="text-xl font-bold tracking-tight text-primary-dark hidden sm:block">Tassarut</span>
       </div>
       
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2">
         
 
         {user ? (
-          <div className="relative">
+          <>
+            <NotificationCenter />
+            <div className="relative">
             <button 
               onClick={() => setIsProfileOpen(!isProfileOpen)}
               className="flex items-center gap-2 p-1 pr-2 rounded-full hover:bg-bg-main transition-all cursor-pointer group"
@@ -123,6 +126,7 @@ export default function Header({ onLogin, onAbout, onHome, user, onLogout, onNav
               )}
             </AnimatePresence>
           </div>
+          </>
         ) : (
           <>
             <button

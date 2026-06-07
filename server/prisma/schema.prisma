@@ -8,18 +8,20 @@ datasource db {
 }
 
 model User {
-  id            String     @id
-  name          String
-  email         String     @unique
-  emailVerified Boolean    @default(false)
-  image         String?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-  role          UserRole   @default(PATIENT)
-  accounts      Account[]
-  patient       Patient?
-  sessions      Session[]
-  therapist     Therapist?
+  id               String     @id
+  name             String
+  email            String     @unique
+  emailVerified    Boolean    @default(false)
+  image            String?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+  role             UserRole   @default(PATIENT)
+  accounts         Account[]
+  sentMessages     Message[]  @relation("TherapistMessages")
+  receivedMessages Message[]  @relation("PatientMessages")
+  patient          Patient?
+  sessions         Session[]
+  therapist        Therapist?
 
   @@map("user")
 }
@@ -144,13 +146,13 @@ model Patient {
   attentesTherapie     AttentesTherapie?
   questionnaireDataRaw Json?                     @map("questionnaire_data_raw")
   appointments         Appointment[]
-  messages             Message[]                 @relation("PatientMessages")
   currentTherapist     Therapist?                @relation(fields: [currentTherapistid], references: [id])
   user                 User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   consultationModes    PatientConsultationMode[]
   languages            PatientLanguage[]
   pathologies          PatientPathology[]
   timeSlots            PatientTimeSlot[]
+  therapistHistory     TherapistHistory[]
 
   @@map("patient")
 }
@@ -175,11 +177,11 @@ model Therapist {
   approcheTherapeute    ApprocheTherapeute?
   appointments          Appointment[]
   documentFiles         Document[]                   @relation("TherapistDocuments")
-  messages              Message[]                    @relation("TherapistMessages")
   patients              Patient[]
   user                  User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
   availableTimeSlots    TherapistAvailableTimeSlot[]
   consultationModes     TherapistConsultationMode[]
+  patientHistory        TherapistHistory[]
   languages             TherapistLanguage[]
   pathologies           TherapistPathology[]
   publicTypes           TherapistPublicType[]
@@ -327,22 +329,22 @@ model TherapistPublicType {
 /// appointments can be detached when the therapist deletes the underlying time slot.
 /// Active appointments (scheduled/confirmed) ALWAYS keep a valid slot reference.
 model Appointment {
-  id                           String                     @id @default(cuid())
+  id                           String                      @id @default(cuid())
   patientId                    String
   therapistId                  String
-  therapistAvailableTimeSlotId String?                    @unique
+  therapistAvailableTimeSlotId String?                     @unique
   scheduledAt                  DateTime
-  durationMinutes              Int                        @default(60)
-  status                       String                     @default("scheduled")
-  type                         String                     @default("video")
+  durationMinutes              Int                         @default(60)
+  status                       String                      @default("scheduled")
+  type                         String                      @default("video")
   notes                        String?
   cancelledAt                  DateTime?
   cancelledBy                  String?
-  createdAt                    DateTime                   @default(now())
-  updatedAt                    DateTime                   @updatedAt
-  patient                      Patient                    @relation(fields: [patientId], references: [id])
+  createdAt                    DateTime                    @default(now())
+  updatedAt                    DateTime                    @updatedAt
+  patient                      Patient                     @relation(fields: [patientId], references: [id])
   therapistAvailableTimeSlot   TherapistAvailableTimeSlot? @relation(fields: [therapistAvailableTimeSlotId], references: [id])
-  therapist                    Therapist                  @relation(fields: [therapistId], references: [id])
+  therapist                    Therapist                   @relation(fields: [therapistId], references: [id])
   appointmentOutcome           AppointmentOutcome?
 
   @@map("appointment")
@@ -369,14 +371,16 @@ model Message {
   id             String    @id @default(cuid())
   senderId       String
   receiverId     String
-  conversationId String
+  conversationId String @map("roomId")
   content        String
   messageType    String    @default("text")
   isRead         Boolean   @default(false)
   readAt         DateTime?
   createdAt      DateTime  @default(now())
-  patient        Patient   @relation("PatientMessages", fields: [senderId], references: [id], map: "message_patient_fkey")
-  therapist      Therapist @relation("TherapistMessages", fields: [receiverId], references: [id], map: "message_therapist_fkey")
+  isDeleted      Boolean   @default(false)
+  isEdited       Boolean   @default(false)
+  therapist      User      @relation("TherapistMessages", fields: [receiverId], references: [id], onDelete: Cascade, map: "message_therapist_fkey")
+  patient        User      @relation("PatientMessages", fields: [senderId], references: [id], onDelete: Cascade, map: "message_patient_fkey")
 
   @@index([conversationId])
   @@index([senderId])
@@ -418,6 +422,25 @@ model AppointmentOutcome {
   appointment        Appointment @relation(fields: [appointmentId], references: [id])
 
   @@map("appointment_outcome")
+}
+
+/// Therapist change history — tracks every assignment so past
+/// relationships are never lost. When a patient changes therapist:
+/// 1. The previous entry (if any) gets unassignedAt = now()
+/// 2. A new entry is created with assignedAt = now()
+/// Past appointments stay linked via Appointment.therapistId.
+model TherapistHistory {
+  id           String    @id @default(cuid())
+  patientId    String
+  therapistId  String
+  assignedAt   DateTime  @default(now())
+  unassignedAt DateTime?
+  patient      Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  therapist    Therapist @relation(fields: [therapistId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@index([therapistId])
+  @@map("therapist_history")
 }
 
 /// Audit Log

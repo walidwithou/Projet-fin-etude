@@ -93,6 +93,15 @@ const formatYmdLocal = (date) => {
   return `${y}-${m}-${d}`;
 };
 
+// A day is considered "past" if its date is strictly before today
+// (midnight local time). Past days should not be activatable.
+const isPastDate = (year, month, day) => {
+  const d = new Date(year, month, day);
+  const today = new Date();
+  const todayReset = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return d < todayReset;
+};
+
 // Format a time from an ISO string using UTC components,
 // so 13:00 UTC renders as "13:00" regardless of the browser's timezone.
 const formatTimeUtc = (isoStr) => {
@@ -112,6 +121,21 @@ const formatTimeUtc = (isoStr) => {
 //   no_show    -> "ABSENT"      (rouge doux)
 //   cancelled  -> pas de badge, cr\u00e9neau consid\u00e9r\u00e9 libre
 //   pas d'appointment li\u00e9 -> pas de badge (libre)
+/**
+ * Génère un conversationId déterministe basé sur deux User.id triés.
+ * Identique à la logique backend dans message.controller.js
+ * 
+ * IMPORTANT: conversationId doit être construit uniquement avec des User.id.
+ * Ne jamais utiliser Patient.id ou Therapist.id.
+ * Le résultat doit être déterministe : [userId1, userId2].sort().
+ * Backend et frontend doivent utiliser EXACTEMENT le même algorithme.
+ */
+const getConversationId = (userId1, userId2) => {
+  if (!userId1 || !userId2) return undefined;
+  const sorted = [userId1, userId2].sort();
+  return `conv_${sorted[0]}_${sorted[1]}`;
+};
+
 const getSlotBadgeInfo = (slot) => {
   const status = slot?.appointment?.status ?? null;
   switch (status) {
@@ -528,6 +552,9 @@ function TherapistContent({ onNavigateToPage }) {
   };
 
   const handleToggleAvailability = async (dateStr) => {
+    // Prevent activating past dates
+    const [y, m, d] = dateStr.split('-').map(Number);
+    if (isPastDate(y, m - 1, d)) return;
     if (!dayAvailabilities[dateStr]) {
       try {
         await therapistApi.createTimeSlots([{
@@ -821,8 +848,11 @@ function TherapistContent({ onNavigateToPage }) {
                   {selectedClient ? (
                     <ChatWidget 
                       onBack={() => setSelectedClient(null)}
-                      therapist={{ name: selectedClient.user?.name || 'Patient' }}
-                      conversationId={`conv_${therapistProfile?.userId}_${selectedClient.userId}`}
+                      therapist={{ 
+                        userId: selectedClient.userId,
+                        name: selectedClient.user?.name || 'Patient' 
+                      }}
+conversationId={getConversationId(therapistProfile?.userId, selectedClient.userId)}
                     />
                   ) : (
                     <div className="flex-1 flex flex-col items-center justify-center text-center p-12 h-full">
@@ -949,27 +979,30 @@ function TherapistContent({ onNavigateToPage }) {
                               const cellDateStr = isValidDay ? `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(dayNumber).padStart(2, '0')}` : null;
                               const availability = isValidDay ? getDayAvailability(cellDateStr) : { available: false, slots: [] };
                               const dayAppointments = isValidDay ? calendarAppointments.filter(app => app.date === cellDateStr) : [];
+                              const isPastDay = isValidDay && isPastDate(currentYear, currentMonth, dayNumber);
                               return (
                                 <div 
                                   key={i} 
                                   onClick={() => {
-                                    if (isValidDay) {
+                                    if (isValidDay && !isPastDay) {
                                       setSelectedDateStr(cellDateStr);
                                     }
                                   }}
                                   className={`p-2 border-r border-b border-border-color last:border-r-0 flex flex-col justify-between group transition-all relative select-none min-h-[7.5rem] ${
-                                    isValidDay 
+                                    isValidDay && !isPastDay
                                       ? 'cursor-pointer hover:bg-primary/[0.03] bg-card-bg' 
-                                      : 'bg-bg-main/5 text-text-muted/15 pointer-events-none'
+                                      : isValidDay && isPastDay
+                                        ? 'bg-bg-main/5 opacity-50 cursor-default pointer-events-none'
+                                        : 'bg-bg-main/5 text-text-muted/15 pointer-events-none'
                                   }`}
                                 >
                                   <div className="flex justify-between items-center w-full mb-1">
                                     <span className={`text-[10px] font-black ${
-                                      isValidDay ? 'text-text-muted/60 group-hover:text-primary transition-colors' : 'text-text-muted/15'
+                                      isValidDay && !isPastDay ? 'text-text-muted/60 group-hover:text-primary transition-colors' : 'text-text-muted/15'
                                     }`}>
                                       {isValidDay ? dayNumber : ''}
                                     </span>
-                                    {isValidDay && (
+                                    {isValidDay && !isPastDay && (
                                       <span 
                                         onClick={(e) => {
                                           e.stopPropagation();

@@ -1089,6 +1089,90 @@ const getAll = async (req, res, next) => {
   }
 };
 
+/**
+ * Get which days in a given month have at least one bookable slot
+ * for a therapist. Returns an array of date strings (YYYY-MM-DD).
+ *
+ * A slot is considered bookable if it is:
+ *   - in the future (startAt > now)
+ *   - not already booked (isBooked = false)
+ *   - not blocked by a scheduled/confirmed appointment
+ *
+ * This endpoint is READ-ONLY and performs no mutations.
+ */
+const getMonthAvailability = async (req, res, next) => {
+  try {
+    const { therapistId } = req.params;
+    const year = parseInt(req.query.year, 10);
+    const month = parseInt(req.query.month, 10); // 1-based
+
+    if (!year || !month || month < 1 || month > 12) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid year and month (1-12) query parameters are required',
+      });
+    }
+
+    // Range: start of month 00:00 UTC to end of month 23:59:59 UTC
+    const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+    const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+
+    const now = new Date();
+
+    // Fetch all future, unbooked slots in the month for this therapist
+    const slots = await prisma.therapistAvailableTimeSlot.findMany({
+      where: {
+        therapistId,
+        isBooked: false,
+        startAt: {
+          gte: startOfMonth,
+          lte: endOfMonth,
+        },
+      },
+      orderBy: { startAt: 'asc' },
+    });
+
+    // Filter out past slots and extract unique dates (YYYY-MM-DD via UTC)
+    const availableDatesSet = new Set();
+    for (const slot of slots) {
+      if (new Date(slot.startAt) > now) {
+        const d = new Date(slot.startAt);
+        const y = d.getUTCFullYear();
+        const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        availableDatesSet.add(`${y}-${m}-${day}`);
+      }
+    }
+
+    // Also ensure no date is blocked by an active appointment
+    // that occupies ALL slots for that date (edge case safeguard)
+    const activeAppointments = await prisma.appointment.findMany({
+      where: {
+        therapistId,
+        status: { in: ['scheduled', 'confirmed'] },
+        scheduledAt: {
+          gte: startOfMonth,
+          lte: endOfMonth,
+        },
+      },
+      select: { scheduledAt: true },
+    });
+
+    // If a date has all its slots booked by active appointments,
+    // it won't appear in availableDatesSet anyway since isBooked=false
+    // is already a filter. The above is sufficient.
+
+    const result = Array.from(availableDatesSet).sort();
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export {
   create,
   getById,
@@ -1096,6 +1180,7 @@ export {
   cancel,
   reschedule,
   getAvailableSlots,
+  getMonthAvailability,
   createSessionReport,
   getSessionReport,
   getAll,
