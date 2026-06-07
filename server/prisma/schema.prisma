@@ -371,7 +371,7 @@ model Message {
   id             String    @id @default(cuid())
   senderId       String
   receiverId     String
-  conversationId String @map("roomId")
+  conversationId String    @map("roomId")
   content        String
   messageType    String    @default("text")
   isRead         Boolean   @default(false)

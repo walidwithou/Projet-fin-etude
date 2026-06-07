@@ -1,7 +1,8 @@
 ﻿import { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Send, ArrowLeft, Image as ImageIcon, X, Loader2, AlertCircle, MessageSquare } from 'lucide-react'; 
+import { Send, ArrowLeft, Image as ImageIcon, X, Loader2, AlertCircle, MessageSquare, Edit, Check } from 'lucide-react'; 
 import { apiCall } from '../services/api';
+import { useAuth } from '../auth/AuthContext';
 import { connectSocket, getSocket, isConnected } from '../services/socket';
 
 // IMPORTANT: conversationId doit être construit uniquement avec des User.id.
@@ -19,6 +20,8 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [selectedImage, setSelectedImage] = useState(null);
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editContent, setEditContent] = useState('');
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -26,20 +29,8 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
   const lastScrollHeight = useRef(0);
   const lastMessageTimestamp = useRef(Date.now());
 
-  // Récupérer l'id de l'utilisateur courant depuis le token JWT (ou localStorage)
-  // Fallback : on décode le token pour obtenir user.id
-  const getCurrentUserId = () => {
-    try {
-      const token = localStorage.getItem('token');
-      if (!token) return null;
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      return payload.id || payload.sub || null;
-    } catch {
-      return null;
-    }
-  };
-
-  const currentUserId = getCurrentUserId();
+  const { user } = useAuth();
+  const currentUserId = user?.id;
 
   // Fetch messages when conversationId changes
   useEffect(() => {
@@ -87,8 +78,18 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
     // Nouveau message reçu
     const handleNewMessage = (message) => {
       setMessages(prev => {
-        // Éviter les doublons
+        // Si déjà présent via un id correspondant → ignorer (pas de doublon)
         if (prev.some(m => m.id === message.id)) return prev;
+        // Tenter de remplacer un message temporaire correspondant (même sender + contenu)
+        const tempIdx = prev.findIndex(m => 
+          m.id !== message.id && m.senderId === message.senderId && m.content === message.content
+        );
+        if (tempIdx !== -1) {
+          const updated = [...prev];
+          updated[tempIdx] = message;
+          return updated;
+        }
+        // Nouveau message venant de l'autre utilisateur
         return [...prev, message];
       });
       lastMessageTimestamp.current = Date.now();
@@ -101,12 +102,21 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
       ));
     };
 
+    // Message modifié en temps réel
+    const handleMessageUpdated = (updatedMessage) => {
+      setMessages(prev => prev.map(m => 
+        m.id === updatedMessage.id ? updatedMessage : m
+      ));
+    };
+
     socket.on('message:new', handleNewMessage);
     socket.on('message:read', handleMessageRead);
+    socket.on('message:updated', handleMessageUpdated);
 
     return () => {
       socket.off('message:new', handleNewMessage);
       socket.off('message:read', handleMessageRead);
+      socket.off('message:updated', handleMessageUpdated);
     };
   }, []);
 
@@ -245,7 +255,10 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
         if (socket?.connected) {
           const payload = { receiverId, content: tempMsg.content, messageType: 'text' };
           socket.emit('message:send', payload, (response) => {
-            // La réponse du callback est gérée par le handler Socket.IO
+            if (response?.success) {
+              // Remplacer le message temporaire par le vrai message du serveur
+              setMessages(prev => prev.map(m => m.id === tempId ? response.data : m));
+            }
           });
         } else {
           // Fallback HTTP
@@ -264,6 +277,34 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
     } finally {
       setSending(false);
     }
+  };
+
+  // Démarrer l'édition d'un message
+  const handleStartEdit = (msg) => {
+    setEditingMessageId(msg.id);
+    setEditContent(msg.content || msg.text || '');
+  };
+
+  // Annuler l'édition
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+    setEditContent('');
+  };
+
+  // Enregistrer la modification via Socket.IO
+  const handleSaveEdit = () => {
+    if (!editContent.trim() || !editingMessageId) return;
+    
+    const socket = getSocket();
+    if (!socket?.connected) return;
+
+    socket.emit('message:edit', { messageId: editingMessageId, content: editContent.trim() }, (response) => {
+      if (response?.success) {
+        // La mise à jour du state se fait via l'event 'message:updated' reçu
+        setEditingMessageId(null);
+        setEditContent('');
+      }
+    });
   };
 
   const handleKeyDown = (e) => {
@@ -366,6 +407,7 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
 
             {messages.map((msg) => {
               const isOwn = msg.senderId === currentUserId;
+              const isEditing = editingMessageId === msg.id;
               const displayText = msg.content || msg.text;
               const displayTime = msg.createdAt 
                 ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -374,16 +416,59 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
               return (
                 <div 
                   key={msg.id} 
-                  className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}
+                  className={`flex ${isOwn ? 'justify-end' : 'justify-start'} items-end gap-1 group`}
                 >
+                  {/* Bouton Modifier (visible uniquement pour ses propres messages et si pas en cours d'édition) */}
+                  {isOwn && !isEditing && (
+                    <button
+                      onClick={() => handleStartEdit(msg)}
+                      className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-primary/10 text-text-muted hover:text-primary transition-all cursor-pointer mb-1"
+                      title="Modifier"
+                      aria-label="Modifier le message"
+                    >
+                      <Edit size={12} />
+                    </button>
+                  )}
+
                   <div className={`max-w-[85%] p-2.5 px-3.5 rounded-2xl text-[13px] font-medium shadow-sm transition-all ${
                     isOwn 
                       ? 'bg-primary text-white rounded-tr-none' 
                       : 'bg-card-bg text-text-main rounded-tl-none border border-border-color'
                   }`}>
-                    {displayText && <p className="leading-snug break-words whitespace-pre-wrap">{displayText}</p>}
+                    {isEditing ? (
+                      <div className="flex flex-col gap-1">
+                        <textarea
+                          value={editContent}
+                          onChange={(e) => setEditContent(e.target.value)}
+                          className="w-full bg-white/20 text-white rounded-lg p-1.5 text-[12px] resize-none outline-none focus:ring-1 focus:ring-white/50 min-h-[50px]"
+                          rows={2}
+                          autoFocus
+                        />
+                        <div className="flex justify-end gap-1 mt-1">
+                          <button
+                            onClick={handleCancelEdit}
+                            className="text-[9px] px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white/80 transition-all cursor-pointer"
+                          >
+                            Annuler
+                          </button>
+                          <button
+                            onClick={handleSaveEdit}
+                            disabled={!editContent.trim()}
+                            className="text-[9px] px-2 py-1 rounded-lg bg-white text-primary font-bold hover:bg-white/90 transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                          >
+                            <Check size={10} />
+                            Enregistrer
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {displayText && <p className="leading-snug break-words whitespace-pre-wrap">{displayText}</p>}
+                      </>
+                    )}
                     <span className={`text-[8px] block mt-1 opacity-60 font-bold ${isOwn ? 'text-right' : 'text-left'}`}>
                       {displayTime}
+                      {msg.isEdited && <span className="italic opacity-70 ml-1">(modifié)</span>}
                       {isOwn && msg.isRead && <span className="ml-1">✓✓</span>}
                     </span>
                   </div>
