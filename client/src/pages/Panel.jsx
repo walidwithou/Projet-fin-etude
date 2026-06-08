@@ -338,13 +338,10 @@ export default function Panel({ onNavigateToPage }) {
 
     else if (actionType === 'BANN') {
       try {
-        await apiCall(`/admin/users/${targetId}/status`, {
-          method: 'PUT',
-          body: JSON.stringify({ status: 'disabled' }),
-        });
-        setUsersList(prev => prev.map(u => u.id === targetId ? { ...u, status: 'Banned' } : u));
+        await apiCall(`/admin/users/${targetId}/ban`, { method: 'PUT' });
+        setUsersList(prev => prev.map(u => u.id === targetId ? { ...u, banned: true, status: 'Banni' } : u));
         if (selectedUser && selectedUser.id === targetId) {
-          setSelectedUser(prev => ({ ...prev, status: "Banned" }));
+          setSelectedUser(prev => ({ ...prev, banned: true, status: "Banni" }));
         }
       } catch (err) {
         console.error('Failed to ban user:', err);
@@ -352,9 +349,14 @@ export default function Panel({ onNavigateToPage }) {
     }
 
     else if (actionType === 'UNBANN') {
-      setUsersList(prev => prev.map(u => u.id === targetId ? { ...u, status: 'Active' } : u));
-      if (selectedUser && selectedUser.id === targetId) {
-        setSelectedUser(prev => ({ ...prev, status: "Active" }));
+      try {
+        await apiCall(`/admin/users/${targetId}/reactivate`, { method: 'PUT' });
+        setUsersList(prev => prev.map(u => u.id === targetId ? { ...u, banned: false, status: 'Actif' } : u));
+        if (selectedUser && selectedUser.id === targetId) {
+          setSelectedUser(prev => ({ ...prev, banned: false, status: "Actif" }));
+        }
+      } catch (err) {
+        console.error('Failed to reactivate user:', err);
       }
     }
 
@@ -809,10 +811,12 @@ export default function Panel({ onNavigateToPage }) {
                             : null;
                           const cellClasses = vLabel
                             ? vLabel.classes
-                            : (user.status === 'Active' || !user.status ? 'bg-green-500/10 text-green-600'
-                              : user.status === 'Suspended' ? 'bg-amber-500/10 text-amber-600'
-                              : 'bg-red-500/10 text-red-600');
-                          const cellText = vLabel ? vLabel.text : (user.status || 'Active');
+                            : user.banned
+                              ? 'bg-red-500/10 text-red-600'
+                              : (user.status === 'Active' || !user.status ? 'bg-green-500/10 text-green-600'
+                                : user.status === 'Suspended' ? 'bg-amber-500/10 text-amber-600'
+                                : 'bg-red-500/10 text-red-600');
+                          const cellText = vLabel ? vLabel.text : (user.banned ? 'Banni' : (user.status || 'Active'));
 
                           return (
                             <tr key={user.id} className="hover:bg-primary/[0.01] transition-all">
@@ -845,7 +849,7 @@ export default function Panel({ onNavigateToPage }) {
                                 >
                                   <Eye size={12} />
                                 </button>
-                                {user.status === 'Banned' ? (
+                                {user.banned ? (
                                   <button
                                     onClick={() => triggerConfirmation('UNBANN', "Réactiver l'utilisateur", `Souhaitez-vous lever le bannissement de ${user.name} ?`, user.id)}
                                     className="p-1.5 bg-green-500/5 hover:bg-green-500/10 text-green-600 rounded-lg border border-green-500/15 transition-all text-[10px] font-extrabold cursor-pointer"

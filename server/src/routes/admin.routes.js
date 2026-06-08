@@ -15,7 +15,8 @@ router.get('/stats', adminController.getDashboardStats);
 // User management
 router.get('/users', adminController.getAllUsers);
 router.get('/users/:id', adminController.getUserById);
-router.put('/users/:id/status', adminController.updateUserStatus);
+router.put('/users/:id/ban', adminController.banUser);
+router.put('/users/:id/reactivate', adminController.reactivateUser);
 
 // Therapist verification
 router.get('/therapists', adminController.getAllTherapists);

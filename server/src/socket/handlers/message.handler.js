@@ -122,13 +122,19 @@ export const registerMessageHandlers = (io, socket) => {
         },
       });
 
-      // Étape 4 : Créer notification pour le destinataire
+      // Étape 4 : Récupérer le nom de l'expéditeur pour la notification
+      const sender = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true },
+      });
+
+      // Créer notification pour le destinataire
       // On la crée toujours — le frontend gère l'affichage
       const notificationData = {
         id: generateId(),
         userId: receiverId,
         type: "message",
-        title: "Nouveau message",
+        title: `Nouveau message de ${sender?.name || "Utilisateur"}`,
         message: `Vous avez reçu un nouveau message`,
         actionUrl: `/messages/${conversationId}`,
       };

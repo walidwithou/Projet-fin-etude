@@ -75,9 +75,14 @@ router.get('/reviews', therapistOnly, therapistController.getReviews);
 router.get('/stats', therapistOnly, therapistController.getStats);
 
 // Upload documents (diplomas, certificates)
+// NOTE: this route does NOT use `requireVerifiedTherapist` because
+// the therapist MUST upload documents BEFORE being verified — otherwise
+// they would be caught in a catch-22 where they cannot upload the very
+// documents an admin needs to verify them.
 router.post(
   '/documents',
-  therapistOnly,
+  authenticate,
+  authorize(['therapist']),
   upload.array('documents', 10),
   (req, res, next) => {
     therapistController.uploadDocuments(req, res, next);

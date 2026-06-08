@@ -447,6 +447,15 @@ const login = async (req, res, next) => {
       });
     }
 
+    // 🚫 Block banned users from logging in.
+    if (userByEmail.banned) {
+      return res.status(403).json({
+        success: false,
+        message:
+          'Votre compte a été suspendu. Veuillez contacter le support pour plus d\'informations.',
+      });
+    }
+
     // Therapist-only: enforce the verification status at login time.
     if (userByEmail.role === 'THERAPIST') {
       const status = userByEmail.therapist?.verificationStatus;

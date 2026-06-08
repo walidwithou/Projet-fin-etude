@@ -176,13 +176,19 @@ const send = async (req, res, next) => {
       },
     });
 
+    // Récupérer le nom de l'expéditeur pour la notification
+    const sender = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { name: true },
+    });
+
     // Create notification for receiver
     const notification = await prisma.notification.create({
       data: {
         id: generateId(),
         userId: receiverId,
         type: 'message',
-        title: 'Nouveau message',
+        title: `Nouveau message de ${sender?.name || "Utilisateur"}`,
         message: 'Vous avez reçu un nouveau message',
         actionUrl: `/messages/${conversationId}`,
       },

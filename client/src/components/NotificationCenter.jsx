@@ -201,9 +201,7 @@ export default function NotificationCenter({ className = '' }) {
       >
         <Bell size={20} />
         {unreadCount > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-black text-white bg-red-500 rounded-full shadow-lg shadow-red-500/30 leading-none">
-            {unreadCount > 99 ? '99+' : unreadCount}
-          </span>
+          <span className="absolute -top-0.5 -right-0.5 w-[10px] h-[10px] bg-red-500 rounded-full shadow-lg shadow-red-500/30" />
         )}
       </button>
 
@@ -224,9 +222,7 @@ export default function NotificationCenter({ className = '' }) {
                 <Bell size={16} className="text-primary" />
                 <h3 className="font-bold text-sm text-text-main">Notifications</h3>
                 {unreadCount > 0 && (
-                  <span className="text-[10px] font-black text-white bg-red-500 px-1.5 py-0.5 rounded-full leading-none">
-                    {unreadCount}
-                  </span>
+                  <span className="w-2 h-2 bg-red-500 rounded-full inline-block" />
                 )}
               </div>
               {unreadCount > 0 && (

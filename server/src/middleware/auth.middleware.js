@@ -139,6 +139,22 @@ export const authenticate = async (req, res, next) => {
     const { user } = session;
     const role = typeof user.role === 'string' ? user.role.toLowerCase() : user.role;
 
+    // 🚫 Block banned users at the authentication gate.
+    // If the admin has set `user.banned = true`, we reject the request
+    // immediately and clean up the session so the client cannot retry
+    // with the same token.
+    if (user.banned) {
+      // Best-effort cleanup; failure here must not block the 403.
+      prisma.session
+        .delete({ where: { token } })
+        .catch(() => {});
+      return res.status(403).json({
+        success: false,
+        message:
+          'Votre compte a été suspendu. Veuillez contacter le support pour plus d\'informations.',
+      });
+    }
+
     // Hydrate the request context. `req.user` keeps the raw Prisma
     // shape (with nested patient/therapist) so downstream code can
     // read whichever fields it needs; `req.profile` is the polymorphic

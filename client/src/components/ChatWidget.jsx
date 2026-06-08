@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect, Fragment } from 'react';
+﻿import { useState, useRef, useEffect, Fragment, useCallback } from 'react';
 import { motion } from 'motion/react';
 import { Send, ArrowLeft, Image as ImageIcon, X, Loader2, AlertCircle, MessageSquare, Edit, Check, Trash2 } from 'lucide-react'; 
 import { apiCall } from '../services/api';
@@ -65,13 +65,17 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
   const lastScrollHeight = useRef(0);
   const lastMessageTimestamp = useRef(Date.now());
   const initialLoadDone = useRef(false);
+  const isAtBottom = useRef(true);
+  const [hasNewBelow, setHasNewBelow] = useState(false);
 
   const { user } = useAuth();
   const currentUserId = user?.id;
 
-  // Reset du flag d'animation à chaque changement de conversation
+  // Reset des flags à chaque changement de conversation
   useEffect(() => {
     initialLoadDone.current = false;
+    setHasNewBelow(false);
+    isAtBottom.current = true;
   }, [conversationId]);
 
   // Fetch messages when conversationId changes
@@ -87,8 +91,9 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
       setPage(1);
       setMessages([]);
       
+      let res = null;
       try {
-        const res = await apiCall(`/messages/conversations/${conversationId}?page=1&limit=50`, {
+        res = await apiCall(`/messages/conversations/${conversationId}?page=1&limit=50`, {
           method: 'GET',
         });
         
@@ -107,6 +112,15 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
       } finally {
         setLoading(false);
         initialLoadDone.current = true;
+        // Marquer comme lus les messages reçus dans cette conversation
+        const socket = getSocket();
+        if (socket?.connected && currentUserId && res?.success && Array.isArray(res?.data)) {
+          res.data.forEach(msg => {
+            if (msg.receiverId === currentUserId && !msg.isRead) {
+              socket.emit('message:read', { messageId: msg.id });
+            }
+          });
+        }
       }
     };
 
@@ -120,12 +134,18 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
 
     // Nouveau message reçu
     const handleNewMessage = (message) => {
+      // Ne pas afficher un message qui n'appartient pas à la conversation ouverte
+      if (message.conversationId !== conversationId) {
+        return;
+      }
+      // Détecter si le message vient de l'autre participant (pas de nous)
+      const isFromOther = message.senderId !== currentUserId;
       setMessages(prev => {
         // Si déjà présent via un id correspondant → ignorer (pas de doublon)
         if (prev.some(m => m.id === message.id)) return prev;
         // Tenter de remplacer un message temporaire correspondant (même sender + contenu)
         const tempIdx = prev.findIndex(m => 
-          m.id !== message.id && m.senderId === message.senderId && m.content === message.content
+          typeof m.id === 'number' && m.id !== message.id && m.senderId === message.senderId && m.content === message.content
         );
         if (tempIdx !== -1) {
           const updated = [...prev];
@@ -135,6 +155,10 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
         // Nouveau message venant de l'autre utilisateur
         return [...prev, message];
       });
+      // Afficher le badge uniquement si message reçu ET utilisateur pas en bas
+      if (isFromOther && !isAtBottom.current) {
+        setHasNewBelow(true);
+      }
       lastMessageTimestamp.current = Date.now();
     };
 
@@ -170,7 +194,7 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
       socket.off('message:updated', handleMessageUpdated);
       socket.off('message:deleted', handleMessageDeleted);
     };
-  }, []);
+  }, [currentUserId, conversationId]);
 
   const scrollToBottom = (behavior = "smooth") => {
     if (scrollContainerRef.current) {
@@ -180,6 +204,27 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
         });
     }
   };
+
+  // Détecter si l'utilisateur est en bas du scroll
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const diff = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const wasAtBottom = isAtBottom.current;
+    isAtBottom.current = diff < 60;
+    // Disparition auto du badge quand l'utilisateur scroll en bas
+    if (!wasAtBottom && isAtBottom.current && hasNewBelow) {
+      setHasNewBelow(false);
+    }
+  }, [hasNewBelow]);
+
+  // Attacher le listener scroll
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.addEventListener('scroll', handleScroll);
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, [handleScroll]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -238,10 +283,10 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
     }
   }, [loading]);
 
-  // Auto-scroll when new messages are added
+  // Auto-scroll when new messages are added (uniquement si déjà en bas)
   const prevMessagesLength = useRef(messages.length);
   useEffect(() => {
-    if (lastScrollHeight.current === 0 && messages.length > prevMessagesLength.current && !loading) {
+    if (lastScrollHeight.current === 0 && messages.length > prevMessagesLength.current && !loading && isAtBottom.current) {
       scrollToBottom("smooth");
     }
     prevMessagesLength.current = messages.length;
@@ -291,6 +336,7 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
     setMessages(prev => [...prev, tempMsg]);
     setNewMessage('');
     setSelectedImage(null);
+    setError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -441,10 +487,24 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
           </div>
         ) : error ? (
           <div className="flex items-center justify-center h-full">
-            <div className="text-center">
-              <AlertCircle className="w-8 h-8 text-red-500 mx-auto mb-2" />
-              <p className="text-sm text-text-muted">{error}</p>
-            </div>
+            {error === 'Access denied' ? (
+              <div className="text-center max-w-sm">
+                <div className="w-12 h-12 bg-primary/10 text-primary rounded-full flex items-center justify-center mx-auto mb-3">
+                  <Send size={20} />
+                </div>
+                <p className="text-sm font-bold text-text-main">Commencez la conversation</p>
+                <p className="text-xs text-text-muted mt-1">
+                  {therapist?.name 
+                    ? `Envoyez votre premier message à ${therapist.name}`
+                    : 'Envoyez votre premier message'}
+                </p>
+              </div>
+            ) : (
+              <div className="text-center">
+                <AlertCircle className="w-8 h-8 text-red-500 mx-auto mb-2" />
+                <p className="text-sm text-text-muted">{error}</p>
+              </div>
+            )}
           </div>
         ) : messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
@@ -569,6 +629,15 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
           </>
         )}
         <div ref={chatEndRef} className="h-2" />
+        {/* Badge "↓ Nouveau message" — uniquement pour messages reçus quand l'utilisateur n'est pas en bas */}
+        {hasNewBelow && (
+          <button
+            onClick={() => { scrollToBottom("smooth"); setHasNewBelow(false); }}
+            className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 bg-primary text-white text-xs font-black rounded-full shadow-xl shadow-primary/30 hover:scale-105 active:scale-95 transition-all animate-bounce cursor-pointer"
+          >
+            ↓ Nouveau message
+          </button>
+        )}
       </div>
 
       {/* Input Area */}

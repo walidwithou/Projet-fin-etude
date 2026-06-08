@@ -76,9 +76,7 @@ export default function SessionReport({ session, isEmbedded = false, onBack = nu
         </div>
       </div>
 
-      <div className="pt-4 border-t border-border-color flex justify-between items-center text-[10px] font-bold text-text-muted">
-        <span>Signé électroniquement par {session.therapistName || 'Dr. Amine B.'}</span>
-      </div>
+   
     </div>
   );
 }

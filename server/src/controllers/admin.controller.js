@@ -183,31 +183,49 @@ const getUserById = async (req, res, next) => {
 };
 
 /**
- * Update user status
+ * Ban a user — sets `banned = true` on the User record and
+ * immediately invalidates all active sessions so the user is
+ * logged out and blocked from future authentication.
  */
-const updateUserStatus = async (req, res, next) => {
+const banUser = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
 
-    // For now, we can track status by managing sessions
-    // A more robust solution would add a status field to the user table
-
-    if (status === 'disabled') {
-      // Delete all user sessions to log them out
-      await prisma.session.deleteMany({ where: { userId: id } });
+    const user = await prisma.user.findUnique({ where: { id } });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
     }
 
-    // Create audit log
+    if (user.role === 'ADMIN') {
+      return res.status(403).json({
+        success: false,
+        message: 'Cannot ban an admin account',
+      });
+    }
+
+    // Set banned flag
+    await prisma.user.update({
+      where: { id },
+      data: { banned: true },
+    });
+
+    // Invalidate all sessions immediately
+    await prisma.session.deleteMany({ where: { userId: id } });
+
+    // Audit log
     await prisma.auditLog.create({
       data: {
         id: generateId(),
         actorId: req.user.id,
         actorRole: 'admin',
-        action: 'user.status_updated',
+        action: 'user.banned',
         resourceType: 'user',
         resourceId: id,
-        newValue: { status },
+        previousValue: { banned: false },
+        newValue: { banned: true },
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
       },
@@ -215,7 +233,60 @@ const updateUserStatus = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: `User status updated to ${status}`,
+      message: 'User has been banned successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Reactivate a previously banned user — sets `banned = false`.
+ * The user can log in again normally.
+ */
+const reactivateUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const user = await prisma.user.findUnique({ where: { id } });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    if (!user.banned) {
+      return res.status(400).json({
+        success: false,
+        message: 'User is not banned',
+      });
+    }
+
+    await prisma.user.update({
+      where: { id },
+      data: { banned: false },
+    });
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        id: generateId(),
+        actorId: req.user.id,
+        actorRole: 'admin',
+        action: 'user.reactivated',
+        resourceType: 'user',
+        resourceId: id,
+        previousValue: { banned: true },
+        newValue: { banned: false },
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+      },
+    });
+
+    res.json({
+      success: true,
+      message: 'User has been reactivated successfully',
     });
   } catch (error) {
     next(error);
@@ -754,7 +825,8 @@ export {
   getDashboardStats,
   getAllUsers,
   getUserById,
-  updateUserStatus,
+  banUser,
+  reactivateUser,
   getPendingTherapists,
   getAllTherapists,
   getTherapistVerificationDetails,

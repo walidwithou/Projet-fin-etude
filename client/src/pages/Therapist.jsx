@@ -809,11 +809,6 @@ function TherapistContent({ onNavigateToPage }) {
                   <div className={`flex-1 text-left min-w-0 transition-all duration-300 ${isSidebarOpen ? 'opacity-100 w-auto' : 'opacity-0 md:w-0 md:h-0 md:overflow-hidden'}`}>
                     <div className="flex justify-between items-center mb-0.5">
                       <span className="font-bold text-sm truncate">{patient.user?.name || 'Patient'}</span>
-                      {patient.unreadCount > 0 && (
-                        <span className="ml-2 min-w-[20px] h-[20px] px-1.5 flex items-center justify-center text-[10px] font-black text-white bg-red-500 rounded-full shadow-sm shadow-red-500/30 leading-none">
-                          {patient.unreadCount > 99 ? '99+' : patient.unreadCount}
-                        </span>
-                      )}
                     </div>
                     <p className="text-xs truncate text-text-muted">
                       {patient.wilaya || 'Wilaya non spécifiée'}
