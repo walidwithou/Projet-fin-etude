@@ -1,9 +1,44 @@
-﻿import { useState, useRef, useEffect } from 'react';
+﻿import { useState, useRef, useEffect, Fragment } from 'react';
 import { motion } from 'motion/react';
-import { Send, ArrowLeft, Image as ImageIcon, X, Loader2, AlertCircle, MessageSquare, Edit, Check } from 'lucide-react'; 
+import { Send, ArrowLeft, Image as ImageIcon, X, Loader2, AlertCircle, MessageSquare, Edit, Check, Trash2 } from 'lucide-react'; 
 import { apiCall } from '../services/api';
 import { useAuth } from '../auth/AuthContext';
 import { connectSocket, getSocket, isConnected } from '../services/socket';
+
+// ---------------------------------------------------------------------------
+// Utilitaires d'horodatage humain et séparateurs de dates
+// ---------------------------------------------------------------------------
+const getDateLabel = (dateStr) => {
+  if (!dateStr) return '';
+  const msgDate = new Date(dateStr);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const msgDateStr = msgDate.toDateString();
+  const todayStr = today.toDateString();
+  const yesterdayStr = yesterday.toDateString();
+  if (msgDateStr === todayStr) return "Aujourd'hui";
+  if (msgDateStr === yesterdayStr) return "Hier";
+  return msgDate.toLocaleDateString('fr-FR', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
+};
+
+const getHumanTime = (dateStr) => {
+  if (!dateStr) return '';
+  const msgDate = new Date(dateStr);
+  const time = msgDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const label = getDateLabel(dateStr);
+  return `${label} ${time}`;
+};
+
+const isNewDateGroup = (index, messages) => {
+  if (index === 0) return true;
+  const current = new Date(messages[index].createdAt).toDateString();
+  const previous = new Date(messages[index - 1].createdAt).toDateString();
+  return current !== previous;
+};
+// ---------------------------------------------------------------------------
 
 // IMPORTANT: conversationId doit être construit uniquement avec des User.id.
 // Ne jamais utiliser Patient.id ou Therapist.id.
@@ -22,15 +57,22 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
   const [selectedImage, setSelectedImage] = useState(null);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editContent, setEditContent] = useState('');
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const textareaRef = useRef(null);
   const lastScrollHeight = useRef(0);
   const lastMessageTimestamp = useRef(Date.now());
+  const initialLoadDone = useRef(false);
 
   const { user } = useAuth();
   const currentUserId = user?.id;
+
+  // Reset du flag d'animation à chaque changement de conversation
+  useEffect(() => {
+    initialLoadDone.current = false;
+  }, [conversationId]);
 
   // Fetch messages when conversationId changes
   useEffect(() => {
@@ -64,6 +106,7 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
         }
       } finally {
         setLoading(false);
+        initialLoadDone.current = true;
       }
     };
 
@@ -109,14 +152,23 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
       ));
     };
 
+    // Message supprimé en temps réel
+    const handleMessageDeleted = (deletedMessage) => {
+      setMessages(prev => prev.map(m => 
+        m.id === deletedMessage.id ? deletedMessage : m
+      ));
+    };
+
     socket.on('message:new', handleNewMessage);
     socket.on('message:read', handleMessageRead);
     socket.on('message:updated', handleMessageUpdated);
+    socket.on('message:deleted', handleMessageDeleted);
 
     return () => {
       socket.off('message:new', handleNewMessage);
       socket.off('message:read', handleMessageRead);
       socket.off('message:updated', handleMessageUpdated);
+      socket.off('message:deleted', handleMessageDeleted);
     };
   }, []);
 
@@ -307,6 +359,19 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
     });
   };
 
+  // Suppression logique d'un message via Socket.IO
+  const handleDelete = (messageId) => {
+    const socket = getSocket();
+    if (!socket?.connected) return;
+
+    socket.emit('message:delete', { messageId }, (response) => {
+      if (!response?.success) {
+        console.error('Failed to delete message');
+      }
+      // La mise à jour du state se fait via l'event 'message:deleted' reçu
+    });
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -405,74 +470,100 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
               </div>
             )}
 
-            {messages.map((msg) => {
+            {messages.map((msg, index) => {
               const isOwn = msg.senderId === currentUserId;
               const isEditing = editingMessageId === msg.id;
-              const displayText = msg.content || msg.text;
-              const displayTime = msg.createdAt 
-                ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                : msg.time;
+              const isDeleted = msg.isDeleted === true;
               
               return (
-                <div 
-                  key={msg.id} 
-                  className={`flex ${isOwn ? 'justify-end' : 'justify-start'} items-end gap-1 group`}
-                >
-                  {/* Bouton Modifier (visible uniquement pour ses propres messages et si pas en cours d'édition) */}
-                  {isOwn && !isEditing && (
-                    <button
-                      onClick={() => handleStartEdit(msg)}
-                      className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-primary/10 text-text-muted hover:text-primary transition-all cursor-pointer mb-1"
-                      title="Modifier"
-                      aria-label="Modifier le message"
-                    >
-                      <Edit size={12} />
-                    </button>
-                  )}
-
-                  <div className={`max-w-[85%] p-2.5 px-3.5 rounded-2xl text-[13px] font-medium shadow-sm transition-all ${
-                    isOwn 
-                      ? 'bg-primary text-white rounded-tr-none' 
-                      : 'bg-card-bg text-text-main rounded-tl-none border border-border-color'
-                  }`}>
-                    {isEditing ? (
-                      <div className="flex flex-col gap-1">
-                        <textarea
-                          value={editContent}
-                          onChange={(e) => setEditContent(e.target.value)}
-                          className="w-full bg-white/20 text-white rounded-lg p-1.5 text-[12px] resize-none outline-none focus:ring-1 focus:ring-white/50 min-h-[50px]"
-                          rows={2}
-                          autoFocus
-                        />
-                        <div className="flex justify-end gap-1 mt-1">
-                          <button
-                            onClick={handleCancelEdit}
-                            className="text-[9px] px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white/80 transition-all cursor-pointer"
-                          >
-                            Annuler
-                          </button>
-                          <button
-                            onClick={handleSaveEdit}
-                            disabled={!editContent.trim()}
-                            className="text-[9px] px-2 py-1 rounded-lg bg-white text-primary font-bold hover:bg-white/90 transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1"
-                          >
-                            <Check size={10} />
-                            Enregistrer
-                          </button>
-                        </div>
+                <Fragment key={msg.id}>
+                  {isNewDateGroup(index, messages) && (
+                    <div className="flex items-center justify-center my-4">
+                      <div className="flex items-center gap-3 w-full">
+                        <div className="flex-1 h-px bg-border-color" />
+                        <span className="text-[10px] font-black uppercase tracking-widest text-text-muted/60 shrink-0 px-2">
+                          {getDateLabel(msg.createdAt)}
+                        </span>
+                        <div className="flex-1 h-px bg-border-color" />
                       </div>
-                    ) : (
+                    </div>
+                  )}
+                  <div 
+                    className={`flex ${isOwn ? 'justify-end' : 'justify-start'} items-end gap-1 group`}
+                  >
+                    {/* Boutons d'action (uniquement pour ses propres messages, pas supprimés, pas en édition) */}
+                    {isOwn && !isEditing && !isDeleted && (
                       <>
-                        {displayText && <p className="leading-snug break-words whitespace-pre-wrap">{displayText}</p>}
+                        <button
+                          onClick={() => handleStartEdit(msg)}
+                          className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-primary/10 text-text-muted hover:text-primary transition-all cursor-pointer mb-1"
+                          title="Modifier"
+                          aria-label="Modifier le message"
+                        >
+                          <Edit size={12} />
+                        </button>
+                        <button
+                          onClick={() => setDeleteConfirmId(msg.id)}
+                          className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-100 text-text-muted hover:text-red-500 transition-all cursor-pointer mb-1"
+                          title="Supprimer"
+                          aria-label="Supprimer le message"
+                        >
+                          <Trash2 size={12} />
+                        </button>
                       </>
                     )}
-                    <span className={`text-[8px] block mt-1 opacity-60 font-bold ${isOwn ? 'text-right' : 'text-left'}`}>
-                      {displayTime}
-                      {msg.isEdited && <span className="italic opacity-70 ml-1">(modifié)</span>}
-                      {isOwn && msg.isRead && <span className="ml-1">✓✓</span>}
-                    </span>
+
+                    <motion.div
+                      initial={initialLoadDone.current ? { opacity: 0, y: 12 } : false}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                      className={`max-w-[85%] p-2.5 px-3.5 rounded-2xl text-[13px] font-medium shadow-sm transition-all ${
+                        isOwn 
+                          ? 'bg-primary text-white rounded-tr-none' 
+                          : 'bg-card-bg text-text-main rounded-tl-none border border-border-color'
+                      } ${isDeleted ? (isOwn ? 'bg-primary/60' : 'opacity-60') : ''}`}
+                    >
+                      {isEditing ? (
+                        <div className="flex flex-col gap-1">
+                          <textarea
+                            value={editContent}
+                            onChange={(e) => setEditContent(e.target.value)}
+                            className="w-full bg-white/20 text-white rounded-lg p-1.5 text-[12px] resize-none outline-none focus:ring-1 focus:ring-white/50 min-h-[50px]"
+                            rows={2}
+                            autoFocus
+                          />
+                          <div className="flex justify-end gap-1 mt-1">
+                            <button
+                              onClick={handleCancelEdit}
+                              className="text-[9px] px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white/80 transition-all cursor-pointer"
+                            >
+                              Annuler
+                            </button>
+                            <button
+                              onClick={handleSaveEdit}
+                              disabled={!editContent.trim()}
+                              className="text-[9px] px-2 py-1 rounded-lg bg-white text-primary font-bold hover:bg-white/90 transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                            >
+                              <Check size={10} />
+                              Enregistrer
+                            </button>
+                          </div>
+                        </div>
+                      ) : isDeleted ? (
+                        <p className="leading-snug italic opacity-80 text-[12px]">🗑 Ce message a été supprimé</p>
+                      ) : (
+                        <>
+                          {(msg.content || msg.text) && <p className="leading-snug break-words whitespace-pre-wrap">{msg.content || msg.text}</p>}
+                        </>
+                      )}
+                      <span className={`text-[8px] block mt-1 opacity-60 font-bold ${isOwn ? 'text-right' : 'text-left'}`}>
+                        {getHumanTime(msg.createdAt)}
+                        {!isDeleted && msg.isEdited && <span className="italic opacity-70 ml-1">(modifié)</span>}
+                        {isOwn && !isDeleted && msg.isRead && <span className="ml-1">✓✓</span>}
+                      </span>
+                    </motion.div>
                   </div>
-                </div>
+                </Fragment>
               );
             })}
           </>
@@ -551,6 +642,33 @@ export default function ChatWidget({ therapist, conversationId, onBack }) {
           </button>
         </div>
       </form>
+      {/* Modale de confirmation de suppression */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-card-bg rounded-2xl p-6 max-w-sm mx-4 shadow-2xl border border-border-color">
+            <p className="text-sm font-medium text-text-main mb-4">
+              ⚠️ L'autre participant verra que vous avez supprimé ce message.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setDeleteConfirmId(null)}
+                className="px-4 py-2 text-xs font-bold rounded-xl bg-bg-main text-text-muted hover:bg-border-color transition-all cursor-pointer"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={() => {
+                  handleDelete(deleteConfirmId);
+                  setDeleteConfirmId(null);
+                }}
+                className="px-4 py-2 text-xs font-bold rounded-xl bg-red-500 text-white hover:bg-red-600 transition-all cursor-pointer"
+              >
+                Supprimer pour tous
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

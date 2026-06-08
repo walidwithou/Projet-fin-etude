@@ -248,9 +248,34 @@ const getPatients = async (req, res, next) => {
       isCurrent: true,
     }));
 
+    // V1 — Badge de messages non lus (strictement passif)
+    // Compter en UNE SEULE requête groupBy le nombre de messages non lus
+    // que chaque patient a envoyés au thérapeute.
+    const patientUserIds = annotated.map((p) => p.userId).filter(Boolean);
+    let unreadCountMap = {};
+    if (patientUserIds.length > 0) {
+      const unreadCounts = await prisma.message.groupBy({
+        by: ['senderId'],
+        where: {
+          receiverId: req.user.id,
+          senderId: { in: patientUserIds },
+          isRead: false,
+        },
+        _count: { id: true },
+      });
+      for (const uc of unreadCounts) {
+        unreadCountMap[uc.senderId] = uc._count.id;
+      }
+    }
+
+    const annotatedWithUnread = annotated.map((p) => ({
+      ...p,
+      unreadCount: unreadCountMap[p.userId] || 0,
+    }));
+
     res.json({
       success: true,
-      data: annotated,
+      data: annotatedWithUnread,
     });
   } catch (error) {
     next(error);

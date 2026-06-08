@@ -246,6 +246,66 @@ export const registerMessageHandlers = (io, socket) => {
   });
 
   /**
+   * Suppression logique d'un message.
+   * Payload : { messageId }
+   *
+   * Validations :
+   * - message existe
+   * - message.senderId === socket.data.userId
+   * - message pas déjà supprimé
+   * 
+   * Comportement :
+   * - content = 'Ce message a été supprimé'
+   * - isDeleted = true
+   * - PAS de prisma.message.delete()
+   */
+  socket.on("message:delete", async (data, callback) => {
+    try {
+      const { messageId } = data;
+
+      if (!messageId) {
+        if (callback) callback({ success: false });
+        return;
+      }
+
+      const message = await prisma.message.findUnique({
+        where: { id: messageId },
+      });
+
+      if (!message) {
+        if (callback) callback({ success: false });
+        return;
+      }
+
+      if (message.senderId !== userId) {
+        if (callback) callback({ success: false });
+        return;
+      }
+
+      if (message.isDeleted) {
+        if (callback) callback({ success: false, message: "Already deleted" });
+        return;
+      }
+
+      const deletedMessage = await prisma.message.update({
+        where: { id: messageId },
+        data: {
+          content: "Ce message a été supprimé",
+          isDeleted: true,
+        },
+      });
+
+      io.to(`user:${message.senderId}`).emit("message:deleted", deletedMessage);
+      io.to(`user:${message.receiverId}`).emit("message:deleted", deletedMessage);
+
+      if (callback) callback({ success: true });
+    } catch (error) {
+      console.error("[socket] message:delete error:", error.message);
+      if (callback) callback({ success: false });
+    }
+  });
+
+  /**
    * Marquage d'un message comme lu.
    * Payload : { messageId }
    */
