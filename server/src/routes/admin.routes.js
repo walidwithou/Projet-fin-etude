@@ -18,7 +18,11 @@ router.get('/users/:id', adminController.getUserById);
 router.put('/users/:id/status', adminController.updateUserStatus);
 
 // Therapist verification
+router.get('/therapists', adminController.getAllTherapists);
 router.get('/therapists/pending', adminController.getPendingTherapists);
+// Returns the full practitioner profile + User + SIGNED document URLs
+// in a single round-trip. See admin.controller.js -> getTherapistVerificationDetails.
+router.get('/therapists/:id/verification-details', adminController.getTherapistVerificationDetails);
 router.put('/therapists/:id/verify', adminController.verifyTherapist);
 router.put('/therapists/:id/reject', adminController.rejectTherapist);
 
